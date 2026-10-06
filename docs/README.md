@@ -40,7 +40,10 @@ Calm, book-quality Bible reader for Mac. Offline-first. Fast keyboard-driven nav
 - **Licensed text storage:** SQLite (encrypted SQLCipher only if a publisher requires it).
 
 ## Status: Phase 0 spike done (2026-10-06)
-GPUI is a go. Working: BSB/KJV/WEB import, reading view, sidebar navigator, ⌘K palette (reference + full-text search), footnotes panel, translation switch, themes, font size, menu bar item via `gpui-tray`. See the root [README](../README.md) to run it. Spike findings are in [04](04-architecture-gpui.md#9-spike-findings-2026-10-06).
+GPUI is a go. Working: BSB/KJV/WEB import, reading view, sidebar navigator, ⌘K palette (reference + full-text search), footnotes panel, translation switch, themes, font size, menu bar item via `gpui-tray`. See the root [README](../README.md) to run it and [AGENTS.md](../AGENTS.md) for how to validate changes.
+
+## Status: Phase 1 mostly done (2026-10-06)
+Added back / forward history, recents, Sepia theme, title-bar toolbar with icons, a launchable `.app` bundle, headless UI tests and a one-command screenshot script. Remaining Phase 1 items are in [05](05-roadmap.md). Spike findings are in [04](04-architecture-gpui.md#9-spike-findings-2026-10-06).
 
 ## Still open
 1. **Menu bar icon:** gpui-tray has no template-image option, so the icon is a fixed gray. Fine for now; a small `objc2` call can fix it later.

@@ -21,3 +21,6 @@ image = { version = "0.25", optional = true, default-features = false, features 
 [features]
 # Dev tool: BIBLE_READER_SCREENSHOT=out.png renders the window offscreen and exits.
 screenshot = ["gpui-kit/test-support", "dep:image"]
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }

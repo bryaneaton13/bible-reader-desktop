@@ -1,14 +1,18 @@
+mod appearance;
 mod chapter_view;
 mod library;
+mod palette;
 mod reader;
+mod tabs;
+mod translation_picker;
 mod tray;
 
 use bible_core::VerseId;
 use gpui_kit::base::Root;
-use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 
-use crate::library::{Library, Settings, data_dir, verse_of_the_day};
+use crate::library::{Appearance, Library, Settings, data_dir, verse_of_the_day};
 use crate::reader::ReaderView;
 
 actions!(
@@ -21,8 +25,16 @@ actions!(
         CopyVerseOfTheDay,
         NextChapter,
         PrevChapter,
+        GoBack,
+        GoForward,
         OpenPalette,
+        OpenCommands,
         ClosePalette,
+        NewTab,
+        CloseTab,
+        ReopenClosedTab,
+        NextTab,
+        PrevTab,
         IncreaseFont,
         DecreaseFont,
         ResetFont,
@@ -41,6 +53,13 @@ pub struct SelectTranslation {
     pub index: usize,
 }
 
+/// Pick the reading theme.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = bible_reader, no_json)]
+pub struct SetAppearance {
+    pub appearance: Appearance,
+}
+
 /// The main window, if open. Closing it leaves the app running in the menu bar.
 struct MainWindow(Option<WindowHandle<Root>>, Option<Entity<ReaderView>>);
 
@@ -56,6 +75,7 @@ fn main() {
     };
 
     gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx| {
             gpui_kit::init(cx);
@@ -68,16 +88,40 @@ fn main() {
             cx.on_action(|_: &OpenReader, cx| open_reader(None, cx));
             cx.on_action(|_: &OpenVerseOfTheDay, cx| open_reader(Some(verse_of_the_day()), cx));
             cx.on_action(tray::copy_verse_of_the_day);
+            cx.on_action(|action: &SetAppearance, cx| set_appearance(action.appearance, cx));
+            cx.on_action(|_: &ToggleDark, cx| {
+                let dark = gpui_kit::component::Theme::global(cx).mode.is_dark();
+                set_appearance(
+                    if dark {
+                        Appearance::Light
+                    } else {
+                        Appearance::Dark
+                    },
+                    cx,
+                );
+            });
             cx.set_menus([
                 Menu::new("Bible Reader").items([
                     MenuItem::action("Copy Verse of the Day", CopyVerseOfTheDay),
                     MenuItem::separator(),
                     MenuItem::action("Quit Bible Reader", Quit),
                 ]),
+                Menu::new("File").items([
+                    MenuItem::action("New Tab", NewTab),
+                    MenuItem::action("Reopen Closed Tab", ReopenClosedTab),
+                    MenuItem::separator(),
+                    MenuItem::action("Close Tab", CloseTab),
+                    MenuItem::action("Close Window", CloseWindow),
+                ]),
                 Menu::new("Go").items([
-                    MenuItem::action("Go to Passage…", OpenPalette),
+                    MenuItem::action("Go to Passage or Search…", OpenPalette),
+                    MenuItem::action("Commands…", OpenCommands),
+                    MenuItem::separator(),
                     MenuItem::action("Next Chapter", NextChapter),
                     MenuItem::action("Previous Chapter", PrevChapter),
+                    MenuItem::separator(),
+                    MenuItem::action("Back", GoBack),
+                    MenuItem::action("Forward", GoForward),
                 ]),
                 Menu::new("View").items([
                     MenuItem::action("Toggle Sidebar", ToggleSidebar),
@@ -85,12 +129,22 @@ fn main() {
                     MenuItem::action("Toggle Red Letter", ToggleRedLetter),
                     MenuItem::action("Toggle Verse Numbers", ToggleVerseNumbers),
                     MenuItem::action("Toggle Dark Mode", ToggleDark),
+                    MenuItem::submenu(
+                        Menu::new("Theme").items(
+                            Appearance::ALL.map(|a| {
+                                MenuItem::action(a.label(), SetAppearance { appearance: a })
+                            }),
+                        ),
+                    ),
                     MenuItem::separator(),
                     MenuItem::action("Larger Text", IncreaseFont),
                     MenuItem::action("Smaller Text", DecreaseFont),
                     MenuItem::action("Actual Size", ResetFont),
                 ]),
-                Menu::new("Window").items([MenuItem::action("Close Window", CloseWindow)]),
+                Menu::new("Window").items([
+                    MenuItem::action("Show Next Tab", NextTab),
+                    MenuItem::action("Show Previous Tab", PrevTab),
+                ]),
             ]);
 
             if let Err(err) = tray::install(cx) {
@@ -158,10 +212,19 @@ mod screenshot {
     }
 }
 
-fn bind_keys(cx: &mut App) {
+pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-w", CloseWindow, None),
+        KeyBinding::new("cmd-shift-w", CloseWindow, None),
+        KeyBinding::new("cmd-t", NewTab, Some("Reader")),
+        KeyBinding::new("cmd-w", CloseTab, Some("Reader")),
+        KeyBinding::new("cmd-shift-t", ReopenClosedTab, Some("Reader")),
+        KeyBinding::new("ctrl-tab", NextTab, Some("Reader")),
+        KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Reader")),
+        KeyBinding::new("cmd-}", NextTab, Some("Reader")),
+        KeyBinding::new("cmd-{", PrevTab, Some("Reader")),
+        KeyBinding::new("cmd-p", OpenPalette, Some("Reader")),
+        KeyBinding::new("cmd-shift-p", OpenCommands, Some("Reader")),
         KeyBinding::new("cmd-k", OpenPalette, Some("Reader")),
         KeyBinding::new("cmd-l", OpenPalette, Some("Reader")),
         KeyBinding::new("cmd-f", OpenPalette, Some("Reader")),
@@ -170,6 +233,8 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-[", PrevChapter, Some("Reader")),
         KeyBinding::new("alt-right", NextChapter, Some("Reader")),
         KeyBinding::new("alt-left", PrevChapter, Some("Reader")),
+        KeyBinding::new("ctrl-cmd-left", GoBack, Some("Reader")),
+        KeyBinding::new("ctrl-cmd-right", GoForward, Some("Reader")),
         KeyBinding::new("cmd-=", IncreaseFont, Some("Reader")),
         KeyBinding::new("cmd-+", IncreaseFont, Some("Reader")),
         KeyBinding::new("cmd--", DecreaseFont, Some("Reader")),
@@ -208,24 +273,15 @@ fn open_reader(verse: Option<VerseId>, cx: &mut App) {
         window_bounds: Some(WindowBounds::centered(size(px(1100.), px(820.)), cx)),
         titlebar: Some(TitlebarOptions {
             title: Some("Bible Reader".into()),
-            ..Default::default()
+            // Vertically centered in the 44px toolbar, which doubles as the title bar.
+            traffic_light_position: Some(point(px(16.), px(15.))),
+            ..TitleBar::title_bar_options()
         }),
-        window_min_size: Some(size(px(520.), px(400.))),
-        ..Default::default()
+        window_min_size: Some(size(px(620.), px(400.))),
+        ..TitleBar::window_options()
     };
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
-        match cx.global::<Settings>().dark {
-            Some(dark) => Theme::change(
-                if dark {
-                    ThemeMode::Dark
-                } else {
-                    ThemeMode::Light
-                },
-                Some(window),
-                cx,
-            ),
-            None => Theme::sync_system_appearance(Some(window), cx),
-        }
+        appearance::reapply(window, cx);
         cx.new(|cx| ReaderView::new(window, cx))
     });
     match opened {
@@ -237,4 +293,12 @@ fn open_reader(verse: Option<VerseId>, cx: &mut App) {
         }
         Err(err) => eprintln!("error: failed to open window: {err:#}"),
     }
+}
+
+fn set_appearance(appearance: Appearance, cx: &mut App) {
+    cx.update_global::<Settings, _>(|s, _| {
+        s.appearance = appearance;
+        s.save();
+    });
+    appearance::apply(appearance, None, cx);
 }

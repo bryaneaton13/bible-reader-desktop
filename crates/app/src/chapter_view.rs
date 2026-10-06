@@ -46,8 +46,11 @@ pub fn note_marker(index: usize) -> &'static str {
     LETTERS[index % LETTERS.len()]
 }
 
+/// `verse_in_progress` is the verse that the previous block ended in, for
+/// blocks that continue a verse without restating its number.
 pub fn render_block(
     block: &Block,
+    verse_in_progress: Option<u16>,
     chapter_verse: impl Fn(u16) -> VerseId,
     note_index: &dyn Fn(u32) -> usize,
     palette: &Palette,
@@ -60,7 +63,9 @@ pub fn render_block(
         verses: Vec::new(),
         verse_numbers: Vec::new(),
     };
-    let mut target_start: Option<usize> = None;
+    let mut target_start: Option<usize> = verse_in_progress
+        .filter(|v| options.target == Some(chapter_verse(*v)))
+        .map(|_| 0);
 
     for span in &block.spans {
         match span {
@@ -259,6 +264,7 @@ mod tests {
         };
         let r = render_block(
             &block,
+            None,
             |v| VerseId::new(43, 3, v),
             &|_| 0,
             &palette(),
@@ -283,6 +289,34 @@ mod tests {
     }
 
     #[test]
+    fn target_verse_continues_into_next_block() {
+        let mut block = Block::new(BlockKind::Poetry(2));
+        block.push_text("He leads me beside quiet waters.", TextStyle::default());
+        let options = Options {
+            red_letter: false,
+            show_verse_numbers: true,
+            italic_added: false,
+            target: Some(VerseId::new(19, 23, 2)),
+        };
+        let highlighted = |in_progress| {
+            render_block(
+                &block,
+                in_progress,
+                |v| VerseId::new(19, 23, v),
+                &|_| 0,
+                &palette(),
+                &options,
+            )
+            .highlights
+            .iter()
+            .any(|(r, h)| h.background_color.is_some() && r.start == 0)
+        };
+        assert!(highlighted(Some(2)));
+        assert!(!highlighted(Some(1)));
+        assert!(!highlighted(None));
+    }
+
+    #[test]
     fn hiding_verse_numbers() {
         let mut block = Block::new(BlockKind::Paragraph);
         block.spans.push(Span::Verse { num: 1, end: None });
@@ -295,6 +329,7 @@ mod tests {
         };
         let r = render_block(
             &block,
+            None,
             |v| VerseId::new(1, 1, v),
             &|_| 0,
             &palette(),

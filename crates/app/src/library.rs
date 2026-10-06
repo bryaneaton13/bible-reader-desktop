@@ -76,10 +76,54 @@ pub struct Settings {
     pub font_size: f32,
     pub red_letter: bool,
     pub show_verse_numbers: bool,
-    /// `None` follows the system appearance.
-    pub dark: Option<bool>,
+    pub appearance: Appearance,
+    /// Pre-`appearance` settings files stored this; read once to migrate.
+    #[serde(skip_serializing)]
+    dark: Option<bool>,
     pub sidebar_open: bool,
+    /// Recently read chapters, newest first, as (book, chapter).
+    pub recent: Vec<(u8, u16)>,
+    /// Open reading tabs, restored on launch. `book` / `chapter` /
+    /// `translation` above mirror the active one (the menu bar reads them).
+    pub tabs: Vec<SavedTab>,
+    pub active_tab: usize,
 }
+
+/// One reading tab as stored in settings.json.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedTab {
+    pub book: u8,
+    pub chapter: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verse: Option<u16>,
+    pub translation: String,
+}
+
+/// Reading theme. `System` follows macOS light / dark.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Sepia,
+    Dark,
+}
+
+impl Appearance {
+    pub const ALL: [Appearance; 4] = [Self::System, Self::Light, Self::Sepia, Self::Dark];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "Match System",
+            Self::Light => "Light",
+            Self::Sepia => "Sepia",
+            Self::Dark => "Dark",
+        }
+    }
+}
+
+const RECENT_LIMIT: usize = 12;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -90,8 +134,12 @@ impl Default for Settings {
             font_size: 19.0,
             red_letter: true,
             show_verse_numbers: true,
+            appearance: Appearance::System,
             dark: None,
             sidebar_open: true,
+            recent: Vec::new(),
+            tabs: Vec::new(),
+            active_tab: 0,
         }
     }
 }
@@ -105,10 +153,28 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        Self::path()
+        let mut settings: Self = Self::path()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Some(dark) = settings.dark.take()
+            && settings.appearance == Appearance::System
+        {
+            settings.appearance = if dark {
+                Appearance::Dark
+            } else {
+                Appearance::Light
+            };
+        }
+        settings
+    }
+
+    /// Move `chapter` to the front of the recent list.
+    pub fn push_recent(&mut self, chapter: ChapterRef) {
+        let key = (chapter.book, chapter.chapter);
+        self.recent.retain(|r| *r != key);
+        self.recent.insert(0, key);
+        self.recent.truncate(RECENT_LIMIT);
     }
 
     pub fn save(&self) {

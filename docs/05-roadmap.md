@@ -16,8 +16,10 @@ Original plan:
 - Prototype status item (gpui-tray or objc2) with 2 menu rows.
 - **Exit check:** does it read like a book? If typography is a fight, reconsider (e.g. gpui fork, or SwiftUI shell + Rust core).
 
-## Phase 1: Reader core (2 to 3 wk). Mostly done in spike
-Remaining: history list, chapter grid by keyboard, settings window (font / line height / width), sepia theme, multi-block verse highlight on jump, real `.app` bundle.
+## Phase 1: Reader core (2 to 3 wk). Mostly done
+Done 2026-10-06: back / forward history + recent chapters in the palette, theme picker with sepia (System / Light / Sepia / Dark), multi-block verse highlight on jump, icon toolbar merged into the title bar, real `.app` bundle (`scripts/bundle.sh`), headless UI tests and `scripts/shot.sh`.
+Also done 2026-10-06: tabs (per-tab passage, translation and history; restored on launch; ⌘T / ⌘W / ⇧⌘T), ⌘K / ⌘P palette rebuilt on gpui-kit `Command` (groups, arrow keys, commands with shortcut hints, ⇧⌘P), searchable translation dropdown (gpui-kit `Select`).
+Remaining: chapter grid by keyboard, settings window (font / line height / width), sidebar auto-scroll to the current book.
 
 - Full import for BSB, KJV, WEB. Verse-count validation.
 - Navigator (sidebar + book/chapter grid), prev / next chapter, history.
@@ -38,7 +40,7 @@ Remaining: history list, chapter grid by keyboard, settings window (font / line 
 - Close-last-window keeps app alive.
 
 ## Phase 5: Package + licensed texts (time depends on publishers)
-- `.app` bundle script (Info.plist + binary + DBs in Resources). Ad-hoc sign for personal use.
+- ~~`.app` bundle script (Info.plist + binary + DBs in Resources). Ad-hoc sign for personal use.~~ Done: `scripts/bundle.sh`.
 - When sharing: Developer ID signing, notarization, DMG. Sparkle optional.
 - SQLCipher for licensed DBs. Import NIV / ESV / NLT when files + permission arrive.
 

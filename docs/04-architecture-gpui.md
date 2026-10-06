@@ -217,4 +217,6 @@ The code now exists, so this section replaces the guesses above where they diffe
   - Red letter, italic added words (KJV only), poetry indents, headings, psalm titles and parallel-passage refs all render.
 - **Free text selection:** not built. gpui-base has `SelectableText` with a `TextSelectionLayer`, but it takes plain text (no runs). Revisit when verse selection comes back.
 - **Menu bar:** `gpui-tray` works in-process. The menu is rebuilt with `refresh_menu` on navigation, and `QuitMode::Explicit` keeps the app alive with no windows. There is no template-image API, so the icon is a fixed mid-gray.
+- **Headless UI tests (added in Phase 1):** `gpui-kit`'s `test-support` gives `#[gpui_kit::test]` plus `TestWindowExt` (`click`, `input`, `press` by element id) on gpui's test platform. These tests check behavior, not pixels. See [AGENTS.md](../AGENTS.md#2-headless-ui-tests-behavior-no-pixels).
+- **Icons need explicit assets:** `gpui_kit::application()` registers no `AssetSource`. Call `.with_assets(gpui_kit::assets::Assets)`, or icons render blank.
 - **Visual testing:** the `screenshot` cargo feature uses `Window::render_to_image()` from `test-support` to save a PNG without screen-recording permission. Scripted UI actions must be applied before the first frame. A window that isn't key doesn't reliably repaint before capture.
