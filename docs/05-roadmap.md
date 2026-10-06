@@ -19,7 +19,7 @@ Original plan:
 ## Phase 1: Reader core (2 to 3 wk). Mostly done
 Done 2026-10-06: back / forward history + recent chapters in the palette, theme picker with sepia (System / Light / Sepia / Dark), multi-block verse highlight on jump, icon toolbar merged into the title bar, real `.app` bundle (`scripts/bundle.sh`), headless UI tests and `scripts/shot.sh`.
 Also done 2026-10-06: tabs (per-tab passage, translation and history; restored on launch; ⌘T / ⌘W / ⇧⌘T), ⌘K / ⌘P palette rebuilt on gpui-kit `Command` (groups, arrow keys, commands with shortcut hints, ⇧⌘P), searchable translation dropdown (gpui-kit `Select`).
-Remaining: chapter grid by keyboard, settings window (font / line height / width), sidebar auto-scroll to the current book.
+Also done 2026-10-06: settings window (⌘,), footnote hover popovers, sidebar auto-scroll + keyboard chapter picker (⌥⌘B), palette ⌘Enter new tab + `in:ot` / `in:nt` / `in:book` search scopes, tab drag-to-reorder / pin / rename, ← → chapter keys, ⌘B sidebar, prev / next buttons above the chapter.
 
 - Full import for BSB, KJV, WEB. Verse-count validation.
 - Navigator (sidebar + book/chapter grid), prev / next chapter, history.

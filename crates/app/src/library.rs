@@ -74,6 +74,12 @@ pub struct Settings {
     pub book: u8,
     pub chapter: u16,
     pub font_size: f32,
+    /// Body font family; one of `READING_FONTS`.
+    pub reading_font: String,
+    /// Line height as a multiple of the font size.
+    pub line_height: f32,
+    /// Width of the text column in px.
+    pub reading_width: f32,
     pub red_letter: bool,
     pub show_verse_numbers: bool,
     pub appearance: Appearance,
@@ -97,6 +103,15 @@ pub struct SavedTab {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verse: Option<u16>,
     pub translation: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pinned: bool,
+    /// Custom tab name; `None` shows the passage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Reading theme. `System` follows macOS light / dark.
@@ -113,6 +128,20 @@ pub enum Appearance {
 impl Appearance {
     pub const ALL: [Appearance; 4] = [Self::System, Self::Light, Self::Sepia, Self::Dark];
 
+    /// Stable id, as used by the settings dropdown.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Sepia => "sepia",
+            Self::Dark => "dark",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|a| a.key() == key)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::System => "Match System",
@@ -125,6 +154,20 @@ impl Appearance {
 
 const RECENT_LIMIT: usize = 12;
 
+/// Body fonts offered in the settings window (all ship with macOS).
+pub const READING_FONTS: [&str; 6] = [
+    "Iowan Old Style",
+    "Charter",
+    "Georgia",
+    "Palatino",
+    "Baskerville",
+    "Times New Roman",
+];
+
+pub const FONT_SIZE_RANGE: (f32, f32) = (12., 36.);
+pub const LINE_HEIGHT_RANGE: (f32, f32) = (1.2, 2.2);
+pub const READING_WIDTH_RANGE: (f32, f32) = (480., 1000.);
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -132,6 +175,9 @@ impl Default for Settings {
             book: 43,
             chapter: 1,
             font_size: 19.0,
+            reading_font: READING_FONTS[0].into(),
+            line_height: 1.65,
+            reading_width: 680.,
             red_letter: true,
             show_verse_numbers: true,
             appearance: Appearance::System,

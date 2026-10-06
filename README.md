@@ -44,7 +44,11 @@ The app keeps running in the menu bar after you close the window. Quit from the 
 | ⇧⌘P | Palette with commands only (or type `>`) |
 | ⌘T / ⌘W / ⇧⌘T | New tab / close tab / reopen closed tab |
 | ⌃Tab / ⌃⇧Tab (or ⇧⌘] / ⇧⌘[) | Next / previous tab |
-| ⌘[ / ⌘] (or ⌥← / ⌥→) | Previous / next chapter |
+| ← / → (or ⌘[ / ⌘], ⌥← / ⌥→) | Previous / next chapter |
+| ⌘B (or ⌃⌘S) | Toggle sidebar |
+| ⌥⌘B | Focus sidebar: arrows move, Enter opens, ⌥↑ / ⌥↓ change book, Esc returns |
+| ⌘Enter (in palette) | Open result in a new tab |
+| ⌘, | Settings |
 | ⌃⌘← / ⌃⌘→ | Back / forward through history |
 | ⌘1 … ⌘3 | Switch translation (or use the searchable dropdown in the toolbar) |
 | ⌘+ / ⌘− / ⌘0 | Text size |

@@ -7,7 +7,9 @@
 #
 # ACTIONS (comma-separated): light, sepia, dark, system, notes, nosidebar,
 # version:kjv, palette:<query>, commands:<query>, goto:<passage>, back,
-# forward, newtab, closetab, tab:<n>.
+# forward, newtab, closetab, tab:<n>, pin (active tab), rename:<name>,
+# sidebar (focus the sidebar chapter cursor).
+# SHOT_WINDOW=settings captures the Settings window instead of the reader.
 # Set SHOT_SETTINGS to a settings.json to start from (e.g. with recents).
 set -euo pipefail
 
@@ -30,4 +32,5 @@ HOME=$home \
 BIBLE_READER_SCREENSHOT=$out \
 BIBLE_READER_GOTO=$passage \
 BIBLE_READER_ACTIONS=$actions \
+BIBLE_READER_SCREENSHOT_WINDOW=${SHOT_WINDOW:-} \
   "$root/target/debug/bible-reader"

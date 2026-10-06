@@ -2,6 +2,8 @@
 //! history and scroll position. Tabs persist in settings.json, so they double
 //! as saved places to come back to.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use bible_core::{ChapterRef, VerseId};
 use gpui_kit::ScrollHandle;
 
@@ -26,9 +28,17 @@ impl Location {
     }
 }
 
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
 pub struct Tab {
+    /// Stable identity, so the active tab survives reordering.
+    pub id: u64,
     pub location: Location,
     pub translation: String,
+    /// Pinned tabs sit first, compact and without a close button.
+    pub pinned: bool,
+    /// Custom name that turns the tab into a named saved view.
+    pub name: Option<String>,
     back: Vec<Location>,
     forward: Vec<Location>,
     pub scroll: ScrollHandle,
@@ -37,8 +47,11 @@ pub struct Tab {
 impl Tab {
     pub fn new(location: Location, translation: String) -> Self {
         Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             location,
             translation,
+            pinned: false,
+            name: None,
             back: Vec::new(),
             forward: Vec::new(),
             scroll: ScrollHandle::new(),
@@ -93,12 +106,28 @@ impl Tab {
         self.location.chapter.to_string()
     }
 
+    /// What the tab shows: its custom name, or "John 3 · BSB".
+    pub fn label(&self) -> String {
+        match &self.name {
+            Some(name) => name.clone(),
+            None => format!("{} · {}", self.title(), self.translation),
+        }
+    }
+
+    /// Set the custom name; blank clears it.
+    pub fn rename(&mut self, name: &str) {
+        let name = name.trim();
+        self.name = (!name.is_empty()).then(|| name.to_string());
+    }
+
     pub fn to_saved(&self) -> SavedTab {
         SavedTab {
             book: self.location.chapter.book,
             chapter: self.location.chapter.chapter,
             verse: self.location.verse.map(|v| v.verse()),
             translation: self.translation.clone(),
+            pinned: self.pinned,
+            name: self.name.clone(),
         }
     }
 
@@ -115,7 +144,10 @@ impl Tab {
             .verse
             .filter(|_| valid)
             .map(|v| VerseId::new(chapter.book, chapter.chapter, v));
-        Self::new(Location { chapter, verse }, saved.translation.clone())
+        let mut tab = Self::new(Location { chapter, verse }, saved.translation.clone());
+        tab.pinned = saved.pinned;
+        tab.name = saved.name.clone();
+        tab
     }
 }
 
@@ -157,6 +189,16 @@ mod tests {
     }
 
     #[test]
+    fn label_falls_back_to_the_passage() {
+        let mut tab = Tab::new(at(43, 3), "BSB".into());
+        assert_eq!(tab.label(), "John 3 · BSB");
+        tab.rename("Born again");
+        assert_eq!(tab.label(), "Born again");
+        tab.rename("   ");
+        assert_eq!(tab.label(), "John 3 · BSB");
+    }
+
+    #[test]
     fn saved_round_trip_and_fallback() {
         let tab = Tab::new(
             Location {
@@ -165,7 +207,12 @@ mod tests {
             },
             "KJV".into(),
         );
+        let mut tab = tab;
+        tab.pinned = true;
+        tab.rename("  Shepherd psalm ");
         let restored = Tab::from_saved(&tab.to_saved());
+        assert!(restored.pinned);
+        assert_eq!(restored.label(), "Shepherd psalm");
         assert_eq!(restored.location, tab.location);
         assert_eq!(restored.translation, "KJV");
 
@@ -174,6 +221,8 @@ mod tests {
             chapter: 999,
             verse: Some(1),
             translation: "BSB".into(),
+            pinned: false,
+            name: None,
         };
         assert_eq!(Tab::from_saved(&bogus).location, at(43, 1));
     }

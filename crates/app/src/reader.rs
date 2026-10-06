@@ -1,36 +1,73 @@
 //! The main reading window: title-bar toolbar, tab bar, book sidebar,
 //! chapter text, notes inspector and the ⌘K palette.
 
+use std::cell::Cell;
+
 use bible_core::{BOOKS, Block, BlockKind, ChapterRef, Note, NoteKind, Testament, VerseId};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::menu::DropdownMenu as _;
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
-use gpui_kit::component::tab::{Tab as TabItem, TabBar};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, IndexPath, Selectable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Selectable as _, Sizable as _,
     TitleBar,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::chapter_view::{self, Options, Palette, note_marker, render_block};
-use crate::library::{Appearance, Library, Settings, current_translation};
-use crate::palette::{self, ActivateTab, COMMAND_PREFIX, OpenPassage, Row, SEARCH_LIMIT};
+use crate::library::{Appearance, FONT_SIZE_RANGE, Library, Settings, current_translation};
+use crate::palette::{
+    self, ActivateTab, COMMAND_PREFIX, CloseTabAt, OpenPassage, PinTab, RenameTab, Row,
+    SEARCH_LIMIT, SearchIn,
+};
 use crate::tabs::{Location, Tab};
 use crate::translation_picker::TranslationItem;
 use crate::{
-    ClosePalette, CloseTab, DecreaseFont, GoBack, GoForward, IncreaseFont, NewTab, NextChapter,
-    NextTab, OpenCommands, OpenPalette, PrevChapter, PrevTab, ReopenClosedTab, ResetFont,
-    SelectTranslation, SetAppearance, ToggleInspector, ToggleRedLetter, ToggleSidebar,
-    ToggleVerseNumbers,
+    ClosePalette, CloseTab, DecreaseFont, FocusReader, FocusSidebar, GoBack, GoForward,
+    IncreaseFont, NewTab, NextChapter, NextTab, OpenCommands, OpenInNewTab, OpenPalette,
+    PrevChapter, PrevTab, ReopenClosedTab, ResetFont, SelectTranslation, SetAppearance,
+    SidebarDown, SidebarLeft, SidebarNextBook, SidebarOpen, SidebarPrevBook, SidebarRight,
+    SidebarUp, ToggleInspector, ToggleRedLetter, ToggleSidebar, ToggleVerseNumbers,
 };
 
-const READING_WIDTH: f32 = 680.;
-const READING_FONT: &str = "Iowan Old Style";
 const TOOLBAR_HEIGHT: f32 = 44.;
 const CLOSED_TABS_KEPT: usize = 20;
+/// Chapter tiles per row in the sidebar grid (keyboard Up / Down step).
+const GRID_COLUMNS: u16 = 6;
+
+/// Payload while a tab is being dragged to a new position.
+#[derive(Clone)]
+struct DraggedTab {
+    from: usize,
+}
+
+/// The floating label that follows the pointer during a tab drag.
+struct TabGhost {
+    label: String,
+}
+
+impl Render for TabGhost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .px_3()
+            .py_1()
+            .rounded_md()
+            .bg(theme.popover)
+            .text_color(theme.popover_foreground)
+            .shadow_md()
+            .text_sm()
+            .child(self.label.clone())
+    }
+}
+
+/// Where the sidebar should scroll on the next render: a book row, or the
+/// grid row holding a chapter.
+type SidebarTarget = (u8, Option<u16>);
 
 type TranslationSelect = SelectState<SearchableVec<TranslationItem>>;
 
@@ -46,7 +83,20 @@ pub struct ReaderView {
     selected_note: Option<u32>,
     inspector_open: bool,
     expanded_book: Option<u8>,
+    sidebar_scroll: ScrollHandle,
+    sidebar_focus: FocusHandle,
+    /// Keyboard cursor in the sidebar chapter grid (Enter opens it).
+    sidebar_cursor: ChapterRef,
+    /// Book the sidebar last followed, so it only auto-scrolls on a change.
+    sidebar_book: Option<u8>,
+    scroll_sidebar: Cell<Option<SidebarTarget>>,
     palette_open: bool,
+    /// An action run from the palette has taken over, so its on-confirm
+    /// callback must not close or refocus anything.
+    palette_handed_off: bool,
+    /// Tab being renamed, and the field it is typed into.
+    renaming: Option<usize>,
+    rename_input: Entity<InputState>,
     palette: Entity<CommandState>,
     palette_groups: Vec<palette::Group>,
     translation_select: Entity<TranslationSelect>,
@@ -83,9 +133,15 @@ impl ReaderView {
             SelectState::new(SearchableVec::new(items), selected, window, cx).searchable(true)
         });
         let palette = cx.new(|cx| CommandState::new(window, cx));
+        let rename_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Tab name (blank shows the passage)")
+        });
 
         let subscriptions = vec![
             cx.subscribe_in(&translation_select, window, Self::on_translation_selected),
+            cx.subscribe_in(&rename_input, window, Self::on_rename_input),
+            // Settings window changes and menu actions repaint the reader.
+            cx.observe_global::<Settings>(|_, cx| cx.notify()),
             cx.observe_window_appearance(window, |_, window, cx| {
                 if cx.global::<Settings>().appearance == Appearance::System {
                     crate::appearance::reapply(window, cx);
@@ -98,6 +154,14 @@ impl ReaderView {
         let mut this = Self {
             focus,
             expanded_book: Some(tabs[active].location.chapter.book),
+            sidebar_scroll: ScrollHandle::new(),
+            sidebar_focus: cx.focus_handle(),
+            sidebar_cursor: tabs[active].location.chapter,
+            sidebar_book: None,
+            scroll_sidebar: Cell::new(None),
+            palette_handed_off: false,
+            renaming: None,
+            rename_input,
             tabs,
             active,
             closed: Vec::new(),
@@ -132,6 +196,11 @@ impl ReaderView {
         let tab = &self.tabs[self.active];
         let (location, abbrev) = (tab.location, tab.translation.clone());
         self.expanded_book = Some(location.chapter.book);
+        self.sidebar_cursor = location.chapter;
+        if self.sidebar_book != Some(location.chapter.book) {
+            self.sidebar_book = Some(location.chapter.book);
+            self.scroll_sidebar.set(Some((location.chapter.book, None)));
+        }
 
         cx.update_global::<Settings, _>(|s, _| s.translation = abbrev.clone());
         let translation = current_translation(cx);
@@ -247,9 +316,110 @@ impl ReaderView {
 
     fn new_tab(&mut self, _: &NewTab, _: &mut Window, cx: &mut Context<Self>) {
         let tab = self.tab().duplicate();
+        self.insert_tab_after_active(tab);
+        self.show_active(cx);
+    }
+
+    /// Open a passage in a new tab beside the active one (⌘Enter in the palette).
+    fn open_passage_in_new_tab(
+        &mut self,
+        chapter: ChapterRef,
+        verse: Option<VerseId>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut tab = self.tab().duplicate();
+        tab.location = Location { chapter, verse };
+        self.insert_tab_after_active(tab);
+        self.show_active(cx);
+    }
+
+    /// Insert beside the active tab and make it active. Pinned tabs always
+    /// stay first, so an unpinned tab never lands among them.
+    fn insert_tab_after_active(&mut self, tab: Tab) {
         self.active += 1;
         self.tabs.insert(self.active, tab);
-        self.show_active(cx);
+        self.sort_pinned();
+    }
+
+    /// Keep pinned tabs first (stable), following the active tab by identity.
+    fn sort_pinned(&mut self) {
+        let id = self.tabs[self.active].id;
+        self.tabs.sort_by_key(|t| !t.pinned);
+        self.active = self.tabs.iter().position(|t| t.id == id).unwrap_or(0);
+    }
+
+    fn pin_tab(&mut self, action: &PinTab, _: &mut Window, cx: &mut Context<Self>) {
+        self.pin_tab_at(action.index, cx);
+    }
+
+    fn pin_tab_at(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return;
+        };
+        tab.pinned = !tab.pinned;
+        self.sort_pinned();
+        self.save_tabs(cx);
+    }
+
+    /// Drag-and-drop: the dragged tab takes the drop target's position.
+    fn move_tab(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        let len = self.tabs.len();
+        if from == to || from >= len || to >= len {
+            return;
+        }
+        let id = self.tabs[self.active].id;
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = self.tabs.iter().position(|t| t.id == id).unwrap_or(0);
+        // Dropping across the pin boundary snaps back to the right side of it.
+        self.sort_pinned();
+        self.save_tabs(cx);
+    }
+
+    fn rename_tab(&mut self, action: &RenameTab, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(action.index) else {
+            return;
+        };
+        let current = tab.name.clone().unwrap_or_default();
+        self.palette_handed_off = self.palette_open;
+        self.palette_open = false;
+        self.renaming = Some(action.index);
+        self.rename_input.update(cx, |input, cx| {
+            input.set_value(current, window, cx);
+            input.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn on_rename_input(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let InputEvent::PressEnter { .. } = event
+            && let Some(ix) = self.renaming.take()
+        {
+            let name = input.read(cx).value();
+            if let Some(tab) = self.tabs.get_mut(ix) {
+                tab.rename(&name);
+            }
+            self.focus.focus(window, cx);
+            self.save_tabs(cx);
+            cx.notify();
+        }
+    }
+
+    fn close_tab_action(
+        &mut self,
+        action: &CloseTabAt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if action.index < self.tabs.len() {
+            self.close_tab_at(action.index, window, cx);
+        }
     }
 
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -275,8 +445,7 @@ impl ReaderView {
 
     fn reopen_closed_tab(&mut self, _: &ReopenClosedTab, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(tab) = self.closed.pop() {
-            self.active += 1;
-            self.tabs.insert(self.active, tab);
+            self.insert_tab_after_active(tab);
             self.show_active(cx);
         }
     }
@@ -299,7 +468,7 @@ impl ReaderView {
     }
 
     fn tab_title(&self, tab: &Tab) -> String {
-        format!("{} · {}", tab.title(), tab.translation)
+        tab.label()
     }
 
     // MARK: Translation
@@ -370,8 +539,28 @@ impl ReaderView {
 
     fn close_palette(&mut self, _: &ClosePalette, window: &mut Window, cx: &mut Context<Self>) {
         self.palette_open = false;
+        self.renaming = None;
         self.focus.focus(window, cx);
         cx.notify();
+    }
+
+    /// ⌘Enter: open the highlighted passage in a new tab. Other rows run as usual.
+    fn open_in_new_tab(&mut self, _: &OpenInNewTab, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.palette.read(cx).selected_index();
+        let row = selected.and_then(|ix| self.palette_groups.get(ix.section)?.rows.get(ix.row));
+        if let Some(row) = row {
+            match row.passage() {
+                Some((chapter, verse)) => self.open_passage_in_new_tab(chapter, verse, cx),
+                None => window.dispatch_action(row.action(), cx),
+            }
+        }
+        self.close_palette(&ClosePalette, window, cx);
+    }
+
+    /// Restart the palette scoped to a testament or book: "in:nt ".
+    fn search_in(&mut self, action: &SearchIn, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette_handed_off = self.palette_open;
+        self.show_palette(&format!("in:{} ", action.scope), window, cx);
     }
 
     fn refresh_palette(&mut self, cx: &mut Context<Self>) {
@@ -379,7 +568,11 @@ impl ReaderView {
         let settings = cx.global::<Settings>();
         let library = cx.global::<Library>();
         let translation = current_translation(cx);
-        let search = |q: &str| translation.search(q, SEARCH_LIMIT).unwrap_or_default();
+        let search = |q: &str, books| {
+            translation
+                .search_in(q, books, SEARCH_LIMIT)
+                .unwrap_or_default()
+        };
         let context = palette::Context {
             current: self.chapter(),
             active_tab: self.active,
@@ -392,6 +585,7 @@ impl ReaderView {
                 .collect(),
             translation: &translation.info.abbrev,
             appearance: settings.appearance,
+            active_pinned: self.tab().pinned,
             search: &search,
         };
         self.palette_groups = palette::build(&query, &context);
@@ -541,10 +735,94 @@ impl ReaderView {
             )
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    // MARK: Sidebar keyboard
+
+    /// ⌥⌘B: show the sidebar and put the cursor on the current chapter.
+    fn focus_sidebar(&mut self, _: &FocusSidebar, window: &mut Window, cx: &mut Context<Self>) {
+        if !cx.global::<Settings>().sidebar_open {
+            self.update_settings(cx, |s| s.sidebar_open = true);
+        }
+        self.sidebar_cursor = self.chapter();
+        self.expanded_book = Some(self.sidebar_cursor.book);
+        self.scroll_sidebar.set(Some((
+            self.sidebar_cursor.book,
+            Some(self.sidebar_cursor.chapter),
+        )));
+        self.sidebar_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn focus_reader(&mut self, _: &FocusReader, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn move_cursor(&mut self, to: ChapterRef, cx: &mut Context<Self>) {
+        self.sidebar_cursor = to;
+        self.expanded_book = Some(to.book);
+        self.scroll_sidebar.set(Some((to.book, Some(to.chapter))));
+        cx.notify();
+    }
+
+    fn sidebar_left(&mut self, _: &SidebarLeft, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(to) = self.sidebar_cursor.prev() {
+            self.move_cursor(to, cx);
+        }
+    }
+
+    fn sidebar_right(&mut self, _: &SidebarRight, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(to) = self.sidebar_cursor.next() {
+            self.move_cursor(to, cx);
+        }
+    }
+
+    fn sidebar_up(&mut self, _: &SidebarUp, _: &mut Window, cx: &mut Context<Self>) {
+        let c = self.sidebar_cursor;
+        if c.chapter > GRID_COLUMNS {
+            self.move_cursor(ChapterRef::new(c.book, c.chapter - GRID_COLUMNS), cx);
+        }
+    }
+
+    fn sidebar_down(&mut self, _: &SidebarDown, _: &mut Window, cx: &mut Context<Self>) {
+        let c = self.sidebar_cursor;
+        if c.chapter + GRID_COLUMNS <= c.book_info().chapters {
+            self.move_cursor(ChapterRef::new(c.book, c.chapter + GRID_COLUMNS), cx);
+        }
+    }
+
+    fn sidebar_prev_book(&mut self, _: &SidebarPrevBook, _: &mut Window, cx: &mut Context<Self>) {
+        let book = self.sidebar_cursor.book;
+        if book > 1 {
+            self.move_cursor(ChapterRef::new(book - 1, 1), cx);
+        }
+    }
+
+    fn sidebar_next_book(&mut self, _: &SidebarNextBook, _: &mut Window, cx: &mut Context<Self>) {
+        let book = self.sidebar_cursor.book;
+        if (book as usize) < BOOKS.len() {
+            self.move_cursor(ChapterRef::new(book + 1, 1), cx);
+        }
+    }
+
+    fn sidebar_open(&mut self, _: &SidebarOpen, window: &mut Window, cx: &mut Context<Self>) {
+        let action = OpenPassage {
+            chapter: self.sidebar_cursor,
+            verse: None,
+        };
+        self.open_passage(&action, window, cx);
+        self.focus.focus(window, cx);
+    }
+
+    fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let has_focus = self.sidebar_focus.contains_focused(window, cx);
+        let scroll_to = self.scroll_sidebar.take();
+        let mut scroll_ix = None;
+        // Child count so far: scrolling targets direct children of the list.
+        let mut child_ix = 0usize;
         let mut list = div()
             .id("sidebar-books")
+            .track_scroll(&self.sidebar_scroll)
             .flex()
             .flex_col()
             .overflow_y_scroll()
@@ -565,10 +843,14 @@ impl ReaderView {
                         "NEW TESTAMENT"
                     }),
             );
+            child_ix += 1;
             for book in BOOKS.iter().filter(|b| b.testament() == testament) {
                 let num = book.num;
                 let is_current = self.chapter().book == num;
                 let expanded = self.expanded_book == Some(num);
+                if scroll_to.is_some_and(|(b, c)| b == num && c.is_none()) {
+                    scroll_ix = Some(child_ix);
+                }
                 list = list.child(
                     div()
                         .id(("book", num as usize))
@@ -590,11 +872,24 @@ impl ReaderView {
                             cx.notify();
                         })),
                 );
-                if expanded {
-                    let mut grid = div().flex().flex_wrap().gap_1().px_3().py_1();
-                    for chapter in 1..=book.chapters {
+                child_ix += 1;
+                if !expanded {
+                    continue;
+                }
+                // One child per grid row, so the keyboard cursor can scroll to its row.
+                for first in (1..=book.chapters).step_by(GRID_COLUMNS as usize) {
+                    let last = (first + GRID_COLUMNS - 1).min(book.chapters);
+                    if scroll_to.is_some_and(|(b, c)| {
+                        b == num && c.is_some_and(|c| (first..=last).contains(&c))
+                    }) {
+                        scroll_ix = Some(child_ix);
+                    }
+                    let mut row = div().flex().gap_1().px_3().py(px(2.));
+                    for chapter in first..=last {
                         let selected = is_current && self.chapter().chapter == chapter;
-                        grid = grid.child(
+                        let cursor =
+                            has_focus && self.sidebar_cursor == ChapterRef::new(num, chapter);
+                        row = row.child(
                             div()
                                 .id(("chapter", num as usize * 1000 + chapter as usize))
                                 .w(px(30.))
@@ -603,6 +898,12 @@ impl ReaderView {
                                 .items_center()
                                 .justify_center()
                                 .rounded_sm()
+                                .border_1()
+                                .border_color(if cursor {
+                                    theme.ring
+                                } else {
+                                    transparent_black()
+                                })
                                 .text_xs()
                                 .cursor_pointer()
                                 .when(selected, |d| {
@@ -619,11 +920,26 @@ impl ReaderView {
                                 })),
                         );
                     }
-                    list = list.child(grid);
+                    list = list.child(row);
+                    child_ix += 1;
                 }
             }
         }
+        if let Some(ix) = scroll_ix {
+            self.sidebar_scroll.scroll_to_item(ix);
+        }
         div()
+            .id("sidebar")
+            .key_context("Sidebar")
+            .track_focus(&self.sidebar_focus)
+            .on_action(cx.listener(Self::sidebar_left))
+            .on_action(cx.listener(Self::sidebar_right))
+            .on_action(cx.listener(Self::sidebar_up))
+            .on_action(cx.listener(Self::sidebar_down))
+            .on_action(cx.listener(Self::sidebar_prev_book))
+            .on_action(cx.listener(Self::sidebar_next_book))
+            .on_action(cx.listener(Self::sidebar_open))
+            .on_action(cx.listener(Self::focus_reader))
             .w(px(230.))
             .h_full()
             .flex_shrink_0()
@@ -639,6 +955,9 @@ impl ReaderView {
         let settings = cx.global::<Settings>();
         let dark = theme.mode.is_dark();
         let font_size = settings.font_size;
+        let line_height = settings.line_height;
+        let reading_width = px(settings.reading_width);
+        let reading_font = SharedString::from(settings.reading_font.clone());
         let palette = Palette {
             verse_number: theme.muted_foreground,
             jesus: if dark {
@@ -664,9 +983,9 @@ impl ReaderView {
         let note_ids: Vec<u32> = self.notes.iter().map(|n| n.id).collect();
         // Body text uses explicit runs, so it can't inherit from the parent div.
         let body_style = TextStyle {
-            font_family: READING_FONT.into(),
+            font_family: reading_font.clone(),
             font_size: px(font_size).into(),
-            line_height: relative(1.65),
+            line_height: relative(line_height),
             color: theme.foreground,
             ..Default::default()
         };
@@ -685,13 +1004,42 @@ impl ReaderView {
         column = column.child(
             div()
                 .w_full()
-                .max_w(px(READING_WIDTH))
+                .max_w(reading_width)
                 .px_8()
-                .pt_10()
+                .pt_4()
                 .pb_4()
                 .text_center()
                 .font_family(".SystemUIFont")
                 .text_color(theme.muted_foreground)
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .items_center()
+                        .pb_4()
+                        .child(match self.chapter().prev() {
+                            Some(prev) => Button::new("top-prev")
+                                .label(format!("‹ {prev}"))
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.prev_chapter(&PrevChapter, window, cx)
+                                }))
+                                .into_any_element(),
+                            None => div().into_any_element(),
+                        })
+                        .child(match self.chapter().next() {
+                            Some(next) => Button::new("top-next")
+                                .label(format!("{next} ›"))
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.next_chapter(&NextChapter, window, cx)
+                                }))
+                                .into_any_element(),
+                            None => div().into_any_element(),
+                        }),
+                )
                 .child(
                     div()
                         .text_sm()
@@ -722,6 +1070,20 @@ impl ReaderView {
             }
             let note_ids_for_click: Vec<u32> = rendered.notes.iter().map(|(_, id)| *id).collect();
             let ranges: Vec<_> = rendered.notes.iter().map(|(r, _)| r.clone()).collect();
+            // Footnote text for the hover popover, by marker range.
+            let tips: Vec<(std::ops::Range<usize>, SharedString)> = rendered
+                .notes
+                .iter()
+                .filter_map(|(range, id)| {
+                    let note = self.notes.iter().find(|n| n.id == *id)?;
+                    let label = match note.kind {
+                        NoteKind::Footnote => "",
+                        NoteKind::CrossReference => "Cross-ref · ",
+                    };
+                    let text = format!("{} {label}{}", note_marker(note_index(*id)), note.text);
+                    Some((range.clone(), text.into()))
+                })
+                .collect();
             let styled = if block.kind.is_heading() {
                 StyledText::new(rendered.text.clone()).with_highlights(rendered.highlights.clone())
             } else {
@@ -735,9 +1097,8 @@ impl ReaderView {
                 StyledText::new(rendered.text.clone()).with_runs(runs)
             };
             let entity = cx.entity().downgrade();
-            let text = InteractiveText::new(("block", ix), styled).on_click(
-                ranges,
-                move |range_ix, _, cx| {
+            let text = InteractiveText::new(("block", ix), styled)
+                .on_click(ranges, move |range_ix, _, cx| {
                     if let Some(id) = note_ids_for_click.get(range_ix).copied() {
                         entity
                             .update(cx, |this, cx| {
@@ -747,10 +1108,17 @@ impl ReaderView {
                             })
                             .ok();
                     }
-                },
-            );
+                })
+                .tooltip(move |ix, window, cx| {
+                    let (_, text) = tips.iter().find(|(range, _)| range.contains(&ix))?;
+                    let text = text.clone();
+                    Some(
+                        Tooltip::element(move |_, _| div().max_w(px(340.)).child(text.clone()))
+                            .build(window, cx),
+                    )
+                });
 
-            let base = div().w_full().max_w(px(READING_WIDTH)).px_8();
+            let base = div().w_full().max_w(reading_width).px_8();
             let el = match &block.kind {
                 BlockKind::MajorHeading => base
                     .pt_6()
@@ -816,7 +1184,7 @@ impl ReaderView {
         column = column.child(
             div()
                 .w_full()
-                .max_w(px(READING_WIDTH))
+                .max_w(reading_width)
                 .px_8()
                 .pt_10()
                 .pb_16()
@@ -850,9 +1218,9 @@ impl ReaderView {
             .flex_1()
             .h_full()
             .min_w_0()
-            .font_family(READING_FONT)
+            .font_family(reading_font)
             .text_size(px(font_size))
-            .line_height(relative(1.65))
+            .line_height(relative(line_height))
             .text_color(theme.foreground)
             .child(column)
     }
@@ -949,7 +1317,21 @@ impl ReaderView {
                     .ok();
             }
         };
-        let close_on_confirm = close.clone();
+        // Commands that take over the palette (rename, scoped search) set
+        // `palette_handed_off`; closing would steal their focus.
+        let close_on_confirm = {
+            let view = view.clone();
+            move |window: &mut Window, cx: &mut App| {
+                view.update(cx, |this, cx| {
+                    if std::mem::take(&mut this.palette_handed_off) {
+                        cx.notify();
+                    } else {
+                        this.close_palette(&ClosePalette, window, cx);
+                    }
+                })
+                .ok();
+            }
+        };
 
         let mut command = Command::new(&self.palette)
             .filterable(false)
@@ -988,6 +1370,7 @@ impl ReaderView {
                     .text_color(cx.theme().muted_foreground)
                     .child(hint("up", "").child(hint("down", "Navigate")))
                     .child(hint("enter", "Open"))
+                    .child(hint("cmd-enter", "New tab"))
                     .child(hint("escape", "Close"))
                     .child(hint("shift-cmd-p", "Commands"))
             });
@@ -1022,7 +1405,11 @@ impl ReaderView {
                     }
                 }
             });
-            command = command.group(CommandGroup::new().label(group.heading).items(items));
+            command = command.group(
+                CommandGroup::new()
+                    .label(group.heading.clone())
+                    .items(items),
+            );
         }
 
         div()
@@ -1040,6 +1427,7 @@ impl ReaderView {
             .child(
                 div()
                     .id("palette")
+                    .key_context("Palette")
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .w(px(600.))
                     .rounded_lg()
@@ -1050,51 +1438,154 @@ impl ReaderView {
             )
     }
 
+    fn render_rename(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .id("rename-backdrop")
+            .absolute()
+            .inset_0()
+            .flex()
+            .justify_center()
+            .items_start()
+            .pt(px(72.))
+            .bg(hsla(0., 0., 0., 0.25))
+            .on_click(
+                cx.listener(|this, _, window, cx| this.close_palette(&ClosePalette, window, cx)),
+            )
+            .child(
+                div()
+                    .id("rename")
+                    .key_context("Palette")
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .w(px(420.))
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .rounded_lg()
+                    .bg(theme.popover)
+                    .shadow_lg()
+                    .font_family(".SystemUIFont")
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Rename tab"),
+                    )
+                    .child(Input::new(&self.rename_input))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("Enter to save. A named tab keeps its place as a saved view."),
+                    ),
+            )
+    }
+
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let tabs: Vec<TabItem> = self
-            .tabs
-            .iter()
-            .enumerate()
-            .map(|(ix, tab)| {
-                TabItem::new().label(self.tab_title(tab)).suffix(
-                    Button::new(("close-tab", ix))
-                        .icon(IconName::Close)
-                        .ghost()
-                        .xsmall()
-                        .tooltip("Close tab (⌘W)")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.close_tab_at(ix, window, cx);
-                        })),
-                )
-            })
-            .collect();
+        let (accent, muted) = (theme.accent, theme.muted);
+        let last = self.tabs.len() - 1;
+        let mut strip = div().id("tab-strip").flex().min_w_0().overflow_x_scroll();
+        for (ix, tab) in self.tabs.iter().enumerate() {
+            let selected = ix == self.active;
+            let pinned = tab.pinned;
+            let label = self.tab_title(tab);
+            let ghost = label.clone();
+            strip = strip.child(
+                div()
+                    .id(("tab", ix))
+                    .flex()
+                    .items_center()
+                    .flex_shrink_0()
+                    .gap_1()
+                    .h(px(31.))
+                    .pl_3()
+                    .pr(px(if pinned { 12. } else { 6. }))
+                    .text_sm()
+                    .cursor_pointer()
+                    .border_r_1()
+                    .border_color(theme.border)
+                    .when(selected, |d| {
+                        d.bg(theme.background).text_color(theme.foreground)
+                    })
+                    .when(!selected, |d| {
+                        d.text_color(theme.muted_foreground)
+                            .hover(move |d| d.bg(muted))
+                    })
+                    .when(pinned, |d| {
+                        d.child(Icon::new(IconName::Star).small().text_color(theme.primary))
+                    })
+                    .child(
+                        div()
+                            .max_w(px(if pinned { 120. } else { 220. }))
+                            .truncate()
+                            .child(label),
+                    )
+                    .when(!pinned, |d| {
+                        d.child(
+                            Button::new(("close-tab", ix))
+                                .icon(IconName::Close)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Close tab (⌘W)")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_tab_at(ix, window, cx);
+                                })),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate_tab(&ActivateTab { index: ix }, window, cx)
+                    }))
+                    .on_drag(DraggedTab { from: ix }, move |_, _, _, cx| {
+                        cx.new(|_| TabGhost {
+                            label: ghost.clone(),
+                        })
+                    })
+                    .drag_over::<DraggedTab>(move |style, _, _, _| style.bg(accent))
+                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
+                        this.move_tab(dragged.from, ix, cx)
+                    }))
+                    .context_menu(move |menu, _, _| {
+                        menu.menu(
+                            if pinned { "Unpin Tab" } else { "Pin Tab" },
+                            Box::new(PinTab { index: ix }),
+                        )
+                        .menu("Rename Tab…", Box::new(RenameTab { index: ix }))
+                        .separator()
+                        .menu("Close Tab", Box::new(CloseTabAt { index: ix }))
+                    }),
+            );
+        }
         div()
+            .flex()
+            .items_center()
+            .h(px(32.))
             .border_b_1()
             .border_color(theme.border)
             .bg(theme.sidebar)
+            .child(strip)
+            // Dropping on the empty space moves the tab to the end.
             .child(
-                TabBar::new("tabs")
-                    .small()
-                    .children(tabs)
-                    .selected_index(self.active)
-                    .on_click(cx.listener(|this, ix: &usize, window, cx| {
-                        this.activate_tab(&ActivateTab { index: *ix }, window, cx)
-                    }))
-                    .suffix(
-                        Button::new("tab-bar-new")
-                            .icon(IconName::Plus)
-                            .ghost()
-                            .xsmall()
-                            .tooltip("New tab (⌘T)")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.new_tab(&NewTab, window, cx)
-                                }),
-                            ),
-                    ),
+                div()
+                    .id("tab-bar-end")
+                    .flex_1()
+                    .h_full()
+                    .drag_over::<DraggedTab>(move |style, _, _, _| style.bg(accent))
+                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
+                        this.move_tab(dragged.from, last, cx)
+                    })),
             )
+            .child(
+                Button::new("tab-bar-new")
+                    .icon(IconName::Plus)
+                    .ghost()
+                    .xsmall()
+                    .tooltip("New tab (⌘T)")
+                    .on_click(cx.listener(|this, _, window, cx| this.new_tab(&NewTab, window, cx))),
+            )
+            .pr_2()
     }
 }
 
@@ -1145,6 +1636,12 @@ impl ReaderView {
                 }
             }
             "version" => self.set_translation(arg.to_uppercase(), cx),
+            "pin" => self.pin_tab_at(self.active, cx),
+            "rename" => {
+                self.tabs[self.active].rename(arg);
+                self.save_tabs(cx);
+            }
+            "sidebar" => self.focus_sidebar(&FocusSidebar, window, cx),
             _ => eprintln!("unknown debug action {name}"),
         }
         cx.notify();
@@ -1181,11 +1678,21 @@ impl Render for ReaderView {
             .on_action(cx.listener(Self::activate_tab))
             .on_action(cx.listener(Self::next_tab))
             .on_action(cx.listener(Self::prev_tab))
+            .on_action(cx.listener(Self::pin_tab))
+            .on_action(cx.listener(Self::rename_tab))
+            .on_action(cx.listener(Self::close_tab_action))
+            .on_action(cx.listener(Self::open_in_new_tab))
+            .on_action(cx.listener(Self::search_in))
+            .on_action(cx.listener(Self::focus_sidebar))
             .on_action(cx.listener(|this, _: &IncreaseFont, _, cx| {
-                this.update_settings(cx, |s| s.font_size = (s.font_size + 1.).min(36.))
+                this.update_settings(cx, |s| {
+                    s.font_size = (s.font_size + 1.).min(FONT_SIZE_RANGE.1)
+                })
             }))
             .on_action(cx.listener(|this, _: &DecreaseFont, _, cx| {
-                this.update_settings(cx, |s| s.font_size = (s.font_size - 1.).max(12.))
+                this.update_settings(cx, |s| {
+                    s.font_size = (s.font_size - 1.).max(FONT_SIZE_RANGE.0)
+                })
             }))
             .on_action(cx.listener(|this, _: &ResetFont, _, cx| {
                 this.update_settings(cx, |s| s.font_size = Settings::default().font_size)
@@ -1218,11 +1725,12 @@ impl Render for ReaderView {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .when(sidebar_open, |d| d.child(self.render_sidebar(cx)))
+                    .when(sidebar_open, |d| d.child(self.render_sidebar(window, cx)))
                     .child(self.render_chapter(cx))
                     .when(self.inspector_open, |d| d.child(self.render_inspector(cx))),
             )
             .when(self.palette_open, |d| d.child(self.render_palette(cx)))
+            .when(self.renaming.is_some(), |d| d.child(self.render_rename(cx)))
     }
 }
 
@@ -1375,7 +1883,9 @@ mod tests {
         });
 
         // The tab bar appears with two tabs; clicking the first switches back.
-        with_window(window, cx, |window, cx| window.click(0usize, cx));
+        with_window(window, cx, |window, cx| {
+            window.dispatch_action(Box::new(ActivateTab { index: 0 }), cx)
+        });
         view.read_with(cx, |v, _| {
             assert_eq!(v.active, 0);
             assert_eq!(v.tab_title(v.tab()), "Psalms 23 · KJV");
@@ -1393,5 +1903,182 @@ mod tests {
         // Tabs are saved for the next launch.
         let saved = cx.read(|cx| cx.global::<Settings>().tabs.clone());
         assert_eq!(saved.len(), 2);
+    }
+
+    #[gpui_kit::test]
+    fn arrow_keys_turn_chapters_and_cmd_b_toggles_the_sidebar(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        let press = |key: &'static str, cx: &mut TestAppContext| {
+            with_window(window, cx, |window, cx| window.press(key, cx));
+        };
+        assert_eq!(chapter(&view, cx), "John 1");
+        press("right", cx);
+        press("right", cx);
+        assert_eq!(chapter(&view, cx), "John 3");
+        press("left", cx);
+        assert_eq!(chapter(&view, cx), "John 2");
+
+        let open = |cx: &mut TestAppContext| cx.read(|cx| cx.global::<Settings>().sidebar_open);
+        assert!(open(cx));
+        press("cmd-b", cx);
+        assert!(!open(cx));
+        press("cmd-b", cx);
+        assert!(open(cx));
+
+        // The prev / next buttons at the top of the chapter work too.
+        with_window(window, cx, |window, cx| window.click("top-next", cx));
+        assert_eq!(chapter(&view, cx), "John 3");
+        with_window(window, cx, |window, cx| window.click("top-prev", cx));
+        assert_eq!(chapter(&view, cx), "John 2");
+    }
+
+    #[gpui_kit::test]
+    fn sidebar_chapter_picker_works_from_the_keyboard(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        let press = |key: &'static str, cx: &mut TestAppContext| {
+            with_window(window, cx, |window, cx| window.press(key, cx));
+        };
+        press("cmd-alt-b", cx);
+        // Arrows move the cursor without navigating; Enter opens.
+        press("right", cx);
+        press("down", cx);
+        assert_eq!(chapter(&view, cx), "John 1");
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.sidebar_cursor, ChapterRef::new(43, 8));
+        });
+        press("enter", cx);
+        assert_eq!(chapter(&view, cx), "John 8");
+        // Focus is back on the reader, so arrows turn chapters again.
+        press("right", cx);
+        assert_eq!(chapter(&view, cx), "John 9");
+
+        press("cmd-alt-b", cx);
+        press("alt-down", cx);
+        press("escape", cx);
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.sidebar_cursor, ChapterRef::new(44, 1));
+            assert_eq!(v.chapter().to_string(), "John 9");
+        });
+        press("left", cx);
+        assert_eq!(chapter(&view, cx), "John 8");
+    }
+
+    #[gpui_kit::test]
+    fn palette_cmd_enter_opens_in_a_new_tab(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        with_window(window, cx, |window, cx| window.press("cmd-k", cx));
+        with_window(window, cx, |window, cx| window.input("ps 23", cx));
+        with_window(window, cx, |window, cx| window.press("cmd-enter", cx));
+        view.read_with(cx, |v, _| {
+            assert!(!v.palette_open);
+            assert_eq!(v.tabs.len(), 2);
+            assert_eq!(v.active, 1);
+            assert_eq!(v.chapter().to_string(), "Psalms 23");
+            assert_eq!(v.tabs[0].location.chapter.to_string(), "John 1");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn palette_search_can_be_scoped(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        with_window(window, cx, |window, cx| window.press("cmd-shift-p", cx));
+        with_window(window, cx, |window, cx| window.input("new testament", cx));
+        with_window(window, cx, |window, cx| window.press("enter", cx));
+        view.read_with(cx, |v, cx| {
+            // The palette stays open, restarted as a scoped search.
+            assert!(v.palette_open);
+            assert_eq!(v.palette.read(cx).query(cx).trim(), "in:nt");
+        });
+        with_window(window, cx, |window, cx| window.input("shepherd", cx));
+        view.read_with(cx, |v, _| {
+            let group = &v.palette_groups[0];
+            assert_eq!(group.heading, "Verses in New Testament");
+            assert!(group.rows.iter().all(|r| match r {
+                Row::Verse(hit) => hit.verse.book() >= 40,
+                _ => false,
+            }));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn tabs_pin_reorder_and_rename(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        let press = |key: &'static str, cx: &mut TestAppContext| {
+            with_window(window, cx, |window, cx| window.press(key, cx));
+        };
+        // Three tabs: John 1, John 2, John 3 (the last is active).
+        press("cmd-t", cx);
+        press("cmd-]", cx);
+        press("cmd-t", cx);
+        press("cmd-]", cx);
+        let titles = |cx: &mut TestAppContext| {
+            view.read_with(cx, |v, _| {
+                v.tabs.iter().map(|t| t.title()).collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(titles(cx), ["John 1", "John 2", "John 3"]);
+
+        // Drag the last tab to the front.
+        view.update(cx, |v, cx| v.move_tab(2, 0, cx));
+        assert_eq!(titles(cx), ["John 3", "John 1", "John 2"]);
+        view.read_with(cx, |v, _| assert_eq!(v.active, 0, "active follows its tab"));
+
+        // Pin John 2: it jumps to the front; the active tab is unchanged.
+        view.update(cx, |v, cx| {
+            v.pin_tab_at(2, cx);
+        });
+        assert_eq!(titles(cx), ["John 2", "John 3", "John 1"]);
+        view.read_with(cx, |v, _| assert_eq!(v.tab().title(), "John 3"));
+
+        // Dragging an unpinned tab over a pinned one can't pass the pin.
+        view.update(cx, |v, cx| v.move_tab(2, 0, cx));
+        assert_eq!(titles(cx), ["John 2", "John 1", "John 3"]);
+
+        // Rename through the palette command, then type a name.
+        with_window(window, cx, |window, cx| window.press("cmd-shift-p", cx));
+        with_window(window, cx, |window, cx| window.input("rename tab", cx));
+        with_window(window, cx, |window, cx| window.press("enter", cx));
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.renaming, Some(v.active));
+            assert!(!v.palette_open);
+        });
+        with_window(window, cx, |window, cx| window.input("Born again", cx));
+        with_window(window, cx, |window, cx| window.press("enter", cx));
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.renaming, None);
+            assert_eq!(v.tab().label(), "Born again");
+        });
+
+        // Pins and names are saved.
+        let saved = cx.read(|cx| cx.global::<Settings>().tabs.clone());
+        assert!(saved[0].pinned);
+        assert_eq!(saved[2].name.as_deref(), Some("Born again"));
+    }
+
+    #[gpui_kit::test]
+    fn escape_cancels_a_rename(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        with_window(window, cx, |window, cx| {
+            window.dispatch_action(Box::new(RenameTab { index: 0 }), cx)
+        });
+        view.read_with(cx, |v, _| assert_eq!(v.renaming, Some(0)));
+        with_window(window, cx, |window, cx| window.input("nope", cx));
+        with_window(window, cx, |window, cx| window.press("escape", cx));
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.renaming, None);
+            assert_eq!(v.tab().name, None);
+        });
     }
 }

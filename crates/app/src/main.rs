@@ -3,6 +3,7 @@ mod chapter_view;
 mod library;
 mod palette;
 mod reader;
+mod settings_window;
 mod tabs;
 mod translation_picker;
 mod tray;
@@ -43,6 +44,17 @@ actions!(
         ToggleRedLetter,
         ToggleVerseNumbers,
         ToggleDark,
+        OpenSettings,
+        FocusSidebar,
+        FocusReader,
+        OpenInNewTab,
+        SidebarLeft,
+        SidebarRight,
+        SidebarUp,
+        SidebarDown,
+        SidebarPrevBook,
+        SidebarNextBook,
+        SidebarOpen,
     ]
 );
 
@@ -82,10 +94,12 @@ fn main() {
             cx.set_global(library);
             cx.set_global(Settings::load());
             cx.set_global(MainWindow(None, None));
+            cx.set_global(settings_window::SettingsWindow(None));
 
             bind_keys(cx);
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.on_action(|_: &OpenReader, cx| open_reader(None, cx));
+            cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
             cx.on_action(|_: &OpenVerseOfTheDay, cx| open_reader(Some(verse_of_the_day()), cx));
             cx.on_action(tray::copy_verse_of_the_day);
             cx.on_action(|action: &SetAppearance, cx| set_appearance(action.appearance, cx));
@@ -102,6 +116,8 @@ fn main() {
             });
             cx.set_menus([
                 Menu::new("Bible Reader").items([
+                    MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::separator(),
                     MenuItem::action("Copy Verse of the Day", CopyVerseOfTheDay),
                     MenuItem::separator(),
                     MenuItem::action("Quit Bible Reader", Quit),
@@ -125,6 +141,7 @@ fn main() {
                 ]),
                 Menu::new("View").items([
                     MenuItem::action("Toggle Sidebar", ToggleSidebar),
+                    MenuItem::action("Focus Sidebar", FocusSidebar),
                     MenuItem::action("Toggle Notes", ToggleInspector),
                     MenuItem::action("Toggle Red Letter", ToggleRedLetter),
                     MenuItem::action("Toggle Verse Numbers", ToggleVerseNumbers),
@@ -161,6 +178,7 @@ fn main() {
 /// BIBLE_READER_SCREENSHOT=out.png   where to write the PNG (required)
 /// BIBLE_READER_GOTO="ps 23"         passage to open first
 /// BIBLE_READER_ACTIONS="palette:love one another,notes,dark"
+/// BIBLE_READER_SCREENSHOT_WINDOW=settings   capture the Settings window instead
 #[cfg(feature = "screenshot")]
 mod screenshot {
     use std::time::Duration;
@@ -194,11 +212,21 @@ mod screenshot {
                 view.update(cx, |reader, cx| reader.debug_action(action, window, cx));
             }
         });
+        // BIBLE_READER_SCREENSHOT_WINDOW=settings captures the Settings window.
+        let target = if std::env::var("BIBLE_READER_SCREENSHOT_WINDOW").as_deref() == Ok("settings")
+        {
+            settings_window::open(cx);
+            cx.global::<settings_window::SettingsWindow>()
+                .0
+                .unwrap_or(window)
+        } else {
+            window
+        };
         cx.spawn(async move |cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(1500))
                 .await;
-            let result = window.update(cx, |_, window, _| window.render_to_image());
+            let result = target.update(cx, |_, window, _| window.render_to_image());
             match result {
                 Ok(Ok(image)) => match image.save(&out) {
                     Ok(()) => eprintln!("saved {out}"),
@@ -215,6 +243,7 @@ mod screenshot {
 pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-shift-w", CloseWindow, None),
         KeyBinding::new("cmd-t", NewTab, Some("Reader")),
         KeyBinding::new("cmd-w", CloseTab, Some("Reader")),
@@ -229,10 +258,24 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-l", OpenPalette, Some("Reader")),
         KeyBinding::new("cmd-f", OpenPalette, Some("Reader")),
         KeyBinding::new("escape", ClosePalette, Some("Palette")),
+        KeyBinding::new("cmd-enter", OpenInNewTab, Some("Palette")),
         KeyBinding::new("cmd-]", NextChapter, Some("Reader")),
         KeyBinding::new("cmd-[", PrevChapter, Some("Reader")),
         KeyBinding::new("alt-right", NextChapter, Some("Reader")),
         KeyBinding::new("alt-left", PrevChapter, Some("Reader")),
+        KeyBinding::new("right", NextChapter, Some("Reader")),
+        KeyBinding::new("left", PrevChapter, Some("Reader")),
+        KeyBinding::new("cmd-b", ToggleSidebar, Some("Reader")),
+        KeyBinding::new("cmd-alt-b", FocusSidebar, Some("Reader")),
+        // Sidebar chapter picker: arrows move a cursor, Enter opens.
+        KeyBinding::new("left", SidebarLeft, Some("Sidebar")),
+        KeyBinding::new("right", SidebarRight, Some("Sidebar")),
+        KeyBinding::new("up", SidebarUp, Some("Sidebar")),
+        KeyBinding::new("down", SidebarDown, Some("Sidebar")),
+        KeyBinding::new("alt-up", SidebarPrevBook, Some("Sidebar")),
+        KeyBinding::new("alt-down", SidebarNextBook, Some("Sidebar")),
+        KeyBinding::new("enter", SidebarOpen, Some("Sidebar")),
+        KeyBinding::new("escape", FocusReader, Some("Sidebar")),
         KeyBinding::new("ctrl-cmd-left", GoBack, Some("Reader")),
         KeyBinding::new("ctrl-cmd-right", GoForward, Some("Reader")),
         KeyBinding::new("cmd-=", IncreaseFont, Some("Reader")),

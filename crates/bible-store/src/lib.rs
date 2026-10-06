@@ -2,6 +2,7 @@
 //!
 //! One read-only database file per translation, produced by `bible-import`.
 
+use std::ops::RangeInclusive;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
@@ -179,15 +180,29 @@ impl Translation {
     /// Full-text search. Each whitespace-separated word must appear;
     /// the last word matches as a prefix so results show while typing.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        self.search_in(query, 1..=u8::MAX, limit)
+    }
+
+    /// Like [`search`](Self::search), limited to books `books` (canonical
+    /// numbers, inclusive). Verse ids sort by book, so this is a range scan.
+    pub fn search_in(
+        &self,
+        query: &str,
+        books: RangeInclusive<u8>,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>> {
         let Some(fts_query) = fts_query(query) else {
             return Ok(Vec::new());
         };
+        let lo = VerseId::new(*books.start(), 0, 0).0;
+        let hi = VerseId::new(*books.end(), 999, 999).0;
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, text FROM verse
-             WHERE id IN (SELECT rowid FROM verse_fts WHERE verse_fts MATCH ?1)
-             ORDER BY id LIMIT ?2",
+             WHERE id BETWEEN ?2 AND ?3
+               AND id IN (SELECT rowid FROM verse_fts WHERE verse_fts MATCH ?1)
+             ORDER BY id LIMIT ?4",
         )?;
-        let rows = stmt.query_map(params![fts_query, limit as i64], |r| {
+        let rows = stmt.query_map(params![fts_query, lo, hi, limit as i64], |r| {
             Ok(SearchHit {
                 verse: VerseId(r.get(0)?),
                 text: r.get(1)?,
@@ -268,6 +283,10 @@ mod tests {
         assert_eq!(hits[0].verse, VerseId::new(43, 3, 16));
         assert_eq!(t.search("god", 10).unwrap().len(), 2);
         assert!(t.search("  \"*", 10).unwrap().is_empty());
+        // Scoped to the New Testament (books 40..=66) or one book.
+        assert_eq!(t.search_in("god", 40..=66, 10).unwrap().len(), 1);
+        assert_eq!(t.search_in("god", 1..=1, 10).unwrap().len(), 1);
+        assert!(t.search_in("god", 2..=39, 10).unwrap().is_empty());
 
         let notes = t.notes_for_chapter(ChapterRef::new(43, 3)).unwrap();
         assert_eq!(notes.len(), 1);
