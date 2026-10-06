@@ -1,0 +1,23 @@
+[package]
+name = "app"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bible-reader"
+path = "src/main.rs"
+
+[dependencies]
+bible-core.workspace = true
+bible-store.workspace = true
+gpui-kit.workspace = true
+gpui-tray = { version = "0.1.4", default-features = false, features = ["gpui-kit", "menu-state"] }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+
+[features]
+# Dev tool: BIBLE_READER_SCREENSHOT=out.png renders the window offscreen and exits.
+screenshot = ["gpui-kit/test-support", "dep:image"]

@@ -1,0 +1,240 @@
+mod chapter_view;
+mod library;
+mod reader;
+mod tray;
+
+use bible_core::VerseId;
+use gpui_kit::base::Root;
+use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::*;
+
+use crate::library::{Library, Settings, data_dir, verse_of_the_day};
+use crate::reader::ReaderView;
+
+actions!(
+    bible_reader,
+    [
+        Quit,
+        CloseWindow,
+        OpenReader,
+        OpenVerseOfTheDay,
+        CopyVerseOfTheDay,
+        NextChapter,
+        PrevChapter,
+        OpenPalette,
+        ClosePalette,
+        IncreaseFont,
+        DecreaseFont,
+        ResetFont,
+        ToggleSidebar,
+        ToggleInspector,
+        ToggleRedLetter,
+        ToggleVerseNumbers,
+        ToggleDark,
+    ]
+);
+
+/// Switch to the translation at this position in the toolbar (⌘1, ⌘2, …).
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = bible_reader, no_json)]
+pub struct SelectTranslation {
+    pub index: usize,
+}
+
+/// The main window, if open. Closing it leaves the app running in the menu bar.
+struct MainWindow(Option<WindowHandle<Root>>, Option<Entity<ReaderView>>);
+
+impl Global for MainWindow {}
+
+fn main() {
+    let library = match Library::load(&data_dir()) {
+        Ok(library) => library,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            std::process::exit(1);
+        }
+    };
+
+    gpui_kit::application()
+        .with_quit_mode(QuitMode::Explicit)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            cx.set_global(library);
+            cx.set_global(Settings::load());
+            cx.set_global(MainWindow(None, None));
+
+            bind_keys(cx);
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.on_action(|_: &OpenReader, cx| open_reader(None, cx));
+            cx.on_action(|_: &OpenVerseOfTheDay, cx| open_reader(Some(verse_of_the_day()), cx));
+            cx.on_action(tray::copy_verse_of_the_day);
+            cx.set_menus([
+                Menu::new("Bible Reader").items([
+                    MenuItem::action("Copy Verse of the Day", CopyVerseOfTheDay),
+                    MenuItem::separator(),
+                    MenuItem::action("Quit Bible Reader", Quit),
+                ]),
+                Menu::new("Go").items([
+                    MenuItem::action("Go to Passage…", OpenPalette),
+                    MenuItem::action("Next Chapter", NextChapter),
+                    MenuItem::action("Previous Chapter", PrevChapter),
+                ]),
+                Menu::new("View").items([
+                    MenuItem::action("Toggle Sidebar", ToggleSidebar),
+                    MenuItem::action("Toggle Notes", ToggleInspector),
+                    MenuItem::action("Toggle Red Letter", ToggleRedLetter),
+                    MenuItem::action("Toggle Verse Numbers", ToggleVerseNumbers),
+                    MenuItem::action("Toggle Dark Mode", ToggleDark),
+                    MenuItem::separator(),
+                    MenuItem::action("Larger Text", IncreaseFont),
+                    MenuItem::action("Smaller Text", DecreaseFont),
+                    MenuItem::action("Actual Size", ResetFont),
+                ]),
+                Menu::new("Window").items([MenuItem::action("Close Window", CloseWindow)]),
+            ]);
+
+            if let Err(err) = tray::install(cx) {
+                eprintln!("warning: menu bar item unavailable: {err}");
+            }
+            open_reader(None, cx);
+            #[cfg(feature = "screenshot")]
+            screenshot::run_if_requested(cx);
+        });
+}
+
+/// Dev-only: drive the UI from env vars and save an offscreen render.
+///
+/// BIBLE_READER_SCREENSHOT=out.png   where to write the PNG (required)
+/// BIBLE_READER_GOTO="ps 23"         passage to open first
+/// BIBLE_READER_ACTIONS="palette:love one another,notes,dark"
+#[cfg(feature = "screenshot")]
+mod screenshot {
+    use std::time::Duration;
+
+    use super::*;
+
+    pub fn run_if_requested(cx: &mut App) {
+        let Ok(out) = std::env::var("BIBLE_READER_SCREENSHOT") else {
+            return;
+        };
+        let Some((window, view)) = cx
+            .global::<MainWindow>()
+            .0
+            .zip(cx.global::<MainWindow>().1.clone())
+        else {
+            return;
+        };
+        if let Some(r) = std::env::var("BIBLE_READER_GOTO")
+            .ok()
+            .and_then(|s| bible_core::parse_reference(&s))
+        {
+            view.update(cx, |reader, cx| {
+                reader.go_to(r.chapter_ref(), r.first_verse(), cx)
+            });
+        }
+        let actions = std::env::var("BIBLE_READER_ACTIONS").unwrap_or_default();
+        // Apply before the first frame: a window that isn't key may not
+        // repaint again before the capture.
+        let _ = window.update(cx, |_, window, cx| {
+            for action in actions.split(',').filter(|a| !a.is_empty()) {
+                view.update(cx, |reader, cx| reader.debug_action(action, window, cx));
+            }
+        });
+        cx.spawn(async move |cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1500))
+                .await;
+            let result = window.update(cx, |_, window, _| window.render_to_image());
+            match result {
+                Ok(Ok(image)) => match image.save(&out) {
+                    Ok(()) => eprintln!("saved {out}"),
+                    Err(err) => eprintln!("error saving {out}: {err}"),
+                },
+                Ok(Err(err)) | Err(err) => eprintln!("error rendering: {err:#}"),
+            }
+            cx.update(|cx| cx.quit());
+        })
+        .detach();
+    }
+}
+
+fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("cmd-w", CloseWindow, None),
+        KeyBinding::new("cmd-k", OpenPalette, Some("Reader")),
+        KeyBinding::new("cmd-l", OpenPalette, Some("Reader")),
+        KeyBinding::new("cmd-f", OpenPalette, Some("Reader")),
+        KeyBinding::new("escape", ClosePalette, Some("Palette")),
+        KeyBinding::new("cmd-]", NextChapter, Some("Reader")),
+        KeyBinding::new("cmd-[", PrevChapter, Some("Reader")),
+        KeyBinding::new("alt-right", NextChapter, Some("Reader")),
+        KeyBinding::new("alt-left", PrevChapter, Some("Reader")),
+        KeyBinding::new("cmd-=", IncreaseFont, Some("Reader")),
+        KeyBinding::new("cmd-+", IncreaseFont, Some("Reader")),
+        KeyBinding::new("cmd--", DecreaseFont, Some("Reader")),
+        KeyBinding::new("cmd-0", ResetFont, Some("Reader")),
+        KeyBinding::new("cmd-ctrl-s", ToggleSidebar, Some("Reader")),
+        KeyBinding::new("cmd-alt-n", ToggleInspector, Some("Reader")),
+        KeyBinding::new("cmd-shift-l", ToggleDark, Some("Reader")),
+        KeyBinding::new("cmd-1", SelectTranslation { index: 0 }, Some("Reader")),
+        KeyBinding::new("cmd-2", SelectTranslation { index: 1 }, Some("Reader")),
+        KeyBinding::new("cmd-3", SelectTranslation { index: 2 }, Some("Reader")),
+        KeyBinding::new("cmd-4", SelectTranslation { index: 3 }, Some("Reader")),
+    ]);
+    cx.on_action(|_: &CloseWindow, cx| {
+        if let Some(window) = cx.global::<MainWindow>().0 {
+            let _ = window.update(cx, |_, window, _| window.remove_window());
+        }
+    });
+}
+
+/// Focus the existing window or open a new one, optionally jumping to a verse.
+fn open_reader(verse: Option<VerseId>, cx: &mut App) {
+    cx.activate(true);
+    let existing = cx.global::<MainWindow>();
+    if let (Some(window), Some(view)) = (existing.0, existing.1.clone())
+        && window
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+    {
+        if let Some(v) = verse {
+            view.update(cx, |reader, cx| reader.go_to(v.chapter_ref(), Some(v), cx));
+        }
+        return;
+    }
+
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::centered(size(px(1100.), px(820.)), cx)),
+        titlebar: Some(TitlebarOptions {
+            title: Some("Bible Reader".into()),
+            ..Default::default()
+        }),
+        window_min_size: Some(size(px(520.), px(400.))),
+        ..Default::default()
+    };
+    let opened = gpui_kit::open_window(options, cx, |window, cx| {
+        match cx.global::<Settings>().dark {
+            Some(dark) => Theme::change(
+                if dark {
+                    ThemeMode::Dark
+                } else {
+                    ThemeMode::Light
+                },
+                Some(window),
+                cx,
+            ),
+            None => Theme::sync_system_appearance(Some(window), cx),
+        }
+        cx.new(|cx| ReaderView::new(window, cx))
+    });
+    match opened {
+        Ok((handle, view)) => {
+            if let Some(v) = verse {
+                view.update(cx, |reader, cx| reader.go_to(v.chapter_ref(), Some(v), cx));
+            }
+            cx.set_global(MainWindow(handle.downcast::<Root>(), Some(view)));
+        }
+        Err(err) => eprintln!("error: failed to open window: {err:#}"),
+    }
+}

@@ -1,0 +1,10 @@
+[package]
+name = "bible-import"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bible-core.workspace = true
+bible-store.workspace = true
+anyhow.workspace = true
