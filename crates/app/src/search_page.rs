@@ -446,7 +446,11 @@ impl ReaderView {
             background_color: Some(theme.warning.opacity(0.28)),
             ..Default::default()
         };
-        let query = ParsedQuery::parse(&page.text).plain();
+        let query = page
+            .results
+            .corrected
+            .clone()
+            .unwrap_or_else(|| ParsedQuery::parse(&page.text).plain());
         let ranges = highlight_ranges(&entry.text, &query);
         let body = StyledText::new(entry.text.clone())
             .with_highlights(ranges.into_iter().map(|r| (r, highlight)));
@@ -785,11 +789,14 @@ impl ReaderView {
                     heading_done.1 = true;
                     let total = page.results.total;
                     let shown = page.results.hits.len();
-                    let note = if total > shown {
+                    let mut note = if total > shown {
                         format!("Matches · best {shown} of {total}")
                     } else {
                         format!("Matches · {total}")
                     };
+                    if let Some(fixed) = &page.results.corrected {
+                        note = format!("Showing results for “{fixed}” · {note}");
+                    }
                     body = body.child(self.section_heading(&note, cx));
                 }
                 body = body.child(self.render_entry(ix, entry, page, cx));

@@ -1,6 +1,6 @@
 # Bible Reader (desktop): preliminary plan
 
-Status: research + early recommendations. Nothing built. Date: 2026-10-06.
+Status: written 2026-10-06 as the starting plan. Much of it is now built; see the [roadmap](05-roadmap.md) for progress.
 
 ## Docs
 1. [01-product-ux.md](01-product-ux.md): what good Bible readers do, what changes for desktop, MVP scope

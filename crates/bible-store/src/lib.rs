@@ -2,6 +2,7 @@
 //!
 //! One read-only database file per translation, produced by `bible-import`.
 
+pub mod fuzzy;
 pub mod search;
 pub mod study;
 
@@ -127,6 +128,7 @@ impl TranslationWriter {
 /// Read-only handle to one translation database.
 pub struct Translation {
     conn: Connection,
+    vocab: std::sync::OnceLock<fuzzy::Vocabulary>,
     pub info: TranslationInfo,
 }
 
@@ -146,7 +148,24 @@ impl Translation {
             name: meta("name")?,
             copyright: meta("copyright")?,
         };
-        Ok(Self { conn, info })
+        Ok(Self {
+            conn,
+            info,
+            vocab: Default::default(),
+        })
+    }
+
+    /// Every word the translation uses, for spelling correction. Built on
+    /// first use (tens of milliseconds).
+    pub fn vocabulary(&self) -> &fuzzy::Vocabulary {
+        self.vocab.get_or_init(|| {
+            let texts: Vec<String> = self
+                .conn
+                .prepare("SELECT text FROM verse")
+                .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
+                .unwrap_or_default();
+            fuzzy::Vocabulary::from_texts(texts.iter().map(String::as_str))
+        })
     }
 
     pub fn chapter(&self, chapter: ChapterRef) -> Result<Option<Vec<Block>>> {

@@ -63,6 +63,8 @@ pub struct Results {
     pub hits: Vec<SearchHit>,
     /// Matching verses before the limit was applied.
     pub total: usize,
+    /// The query with misspelled words fixed, when any were.
+    pub corrected: Option<String>,
 }
 
 /// A query broken into what must match, what must not, and phrases.
@@ -112,6 +114,22 @@ impl ParsedQuery {
                 self.terms.extend(words(raw).into_iter().map(|w| vec![w]));
             }
         }
+    }
+
+    /// Fix misspelled single words (not quoted phrases or exclusions).
+    /// Returns whether anything changed.
+    fn correct(&mut self, vocab: &crate::fuzzy::Vocabulary) -> bool {
+        let last = self.terms.len().saturating_sub(1);
+        let mut changed = false;
+        for (i, term) in self.terms.iter_mut().enumerate() {
+            if let [w] = term.as_mut_slice()
+                && let Some(right) = vocab.correct(w, i == last)
+            {
+                *w = right;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// The positive words, space separated, for highlighting and topics.
@@ -190,6 +208,9 @@ pub fn search(
     let mut results = Results::default();
     if parsed.terms.is_empty() {
         return results;
+    }
+    if parsed.correct(translation.vocabulary()) {
+        results.corrected = Some(parsed.plain());
     }
 
     // Topics: not for quoted phrases or exact-phrase mode, which ask for text.

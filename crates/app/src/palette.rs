@@ -558,6 +558,7 @@ mod tests {
                 in_topic: false,
             }],
             total: 42,
+            corrected: None,
         };
         let recent = [(19, 23), (43, 3)];
         let cx = Context {
