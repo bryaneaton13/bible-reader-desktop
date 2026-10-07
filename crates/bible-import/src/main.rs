@@ -1,8 +1,11 @@
 //! Builds translation databases from USFM sources.
 //!
 //! Usage: bible-import [SOURCES_DIR] [OUT_DIR] [ABBREV...]
-//! Defaults: data/sources data/build, all known translations.
+//! Defaults: data/sources data/build, all known translations plus study.db
+//! (topics and cross-references). Name "study" among the abbreviations to
+//! build only that.
 
+mod study;
 mod usfm;
 
 use std::path::{Path, PathBuf};
@@ -46,6 +49,10 @@ fn main() -> Result<()> {
     let only: Vec<String> = args.iter().skip(2).map(|s| s.to_uppercase()).collect();
     std::fs::create_dir_all(&out_dir)?;
 
+    if only.is_empty() || only.iter().any(|a| a == "STUDY") {
+        study::import(&sources_dir.join("openbible"), &out_dir.join("study.db"))
+            .context("importing study data")?;
+    }
     for source in SOURCES {
         if !only.is_empty() && !only.iter().any(|a| a == source.abbrev) {
             continue;

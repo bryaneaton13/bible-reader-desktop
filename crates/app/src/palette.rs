@@ -8,7 +8,7 @@
 use std::ops::RangeInclusive;
 
 use bible_core::{ChapterRef, Reference, VerseId, find_book, parse_reference};
-use bible_store::SearchHit;
+use bible_store::{Results, SearchHit};
 use gpui_kit::Action;
 
 use crate::library::{Appearance, FontPairing};
@@ -19,7 +19,13 @@ use crate::{
     ToggleVerseNumbers,
 };
 
-pub const SEARCH_LIMIT: usize = 100;
+/// Verses fetched for the palette; the search page asks for more.
+pub const SEARCH_LIMIT: usize = 60;
+/// Verse rows shown in the palette before "See all".
+const VERSES_SHOWN: usize = 20;
+const TOPICS_SHOWN: usize = 3;
+/// Suggested searches shown on an empty palette.
+pub const SUGGESTIONS_SHOWN: usize = 4;
 const RECENT_SHOWN: usize = 8;
 /// A query starting with this shows commands only (⇧⌘P opens with it).
 pub const COMMAND_PREFIX: char = '>';
@@ -67,6 +73,20 @@ pub struct SearchIn {
     pub scope: String,
 }
 
+/// Open the search results page. `query` may carry an `in:` scope.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = bible_reader, no_json)]
+pub struct OpenSearchPage {
+    pub query: String,
+}
+
+/// Put this text in the palette (used by suggested searches).
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = bible_reader, no_json)]
+pub struct SetPaletteQuery {
+    pub query: String,
+}
+
 pub enum Row {
     Goto(Reference),
     Tab {
@@ -79,6 +99,18 @@ pub enum Row {
         action: Box<dyn Action>,
     },
     Verse(SearchHit),
+    /// A topic the query is about; opens the results page on it.
+    Topic {
+        name: String,
+        passages: u32,
+    },
+    /// Open every result for the query on the search page.
+    SeeAll {
+        query: String,
+        total: usize,
+    },
+    /// A suggested search; fills the palette with it.
+    Suggestion(String),
 }
 
 impl Row {
@@ -89,6 +121,9 @@ impl Row {
             Row::Recent(c) => c.to_string(),
             Row::Command { label, .. } => label.clone(),
             Row::Verse(hit) => format!("{} {}", hit.verse, hit.text),
+            Row::Topic { name, passages } => format!("Topic: {name} · {passages} passages"),
+            Row::SeeAll { query, total } => format!("See all {total} results for “{query}”"),
+            Row::Suggestion(query) => query.clone(),
         }
     }
 
@@ -98,7 +133,11 @@ impl Row {
             Row::Goto(r) => Some((r.chapter_ref(), r.first_verse())),
             Row::Recent(c) => Some((*c, None)),
             Row::Verse(hit) => Some((hit.verse.chapter_ref(), Some(hit.verse))),
-            Row::Tab { .. } | Row::Command { .. } => None,
+            Row::Tab { .. }
+            | Row::Command { .. }
+            | Row::Topic { .. }
+            | Row::SeeAll { .. }
+            | Row::Suggestion(_) => None,
         }
     }
 
@@ -117,6 +156,15 @@ impl Row {
             Row::Verse(hit) => Box::new(OpenPassage {
                 chapter: hit.verse.chapter_ref(),
                 verse: Some(hit.verse),
+            }),
+            Row::Topic { name, .. } => Box::new(OpenSearchPage {
+                query: name.clone(),
+            }),
+            Row::SeeAll { query, .. } => Box::new(OpenSearchPage {
+                query: query.clone(),
+            }),
+            Row::Suggestion(query) => Box::new(SetPaletteQuery {
+                query: query.clone(),
             }),
         }
     }
@@ -142,12 +190,14 @@ pub struct Context<'a> {
     pub active_pinned: bool,
     /// The active tab shows two panes side by side.
     pub split: bool,
-    /// Full-text search over the given books (canonical numbers).
-    pub search: &'a dyn Fn(&str, RangeInclusive<u8>) -> Vec<SearchHit>,
+    /// Ranked search over the given books (canonical numbers).
+    pub search: &'a dyn Fn(&str, RangeInclusive<u8>) -> Results,
+    /// Suggested searches for the empty palette.
+    pub suggestions: Vec<&'static str>,
 }
 
 /// Where a search is limited to, from an `in:nt` / `in:john` word.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scope {
     pub label: String,
     pub books: RangeInclusive<u8>,
@@ -201,6 +251,7 @@ pub fn build(query: &str, cx: &Context) -> Vec<Group> {
         return groups;
     }
 
+    let raw = query;
     let (scope, query) = split_scope(query);
     let query = query.as_str();
 
@@ -214,6 +265,13 @@ pub fn build(query: &str, cx: &Context) -> Vec<Group> {
                 .filter(|c| *c != cx.current)
                 .take(RECENT_SHOWN)
                 .map(Row::Recent)
+                .collect(),
+        );
+        push(
+            "Try searching".into(),
+            cx.suggestions
+                .iter()
+                .map(|s| Row::Suggestion(s.to_string()))
                 .collect(),
         );
         push("Commands".into(), commands("", cx));
@@ -240,13 +298,39 @@ pub fn build(query: &str, cx: &Context) -> Vec<Group> {
             Some(scope) => (format!("Verses in {}", scope.label), scope.books.clone()),
             None => ("Verses".to_string(), 1..=u8::MAX),
         };
-        push(
-            heading,
-            (cx.search)(query, books)
-                .into_iter()
-                .map(Row::Verse)
-                .collect(),
-        );
+        let found = (cx.search)(query, books);
+        if scope.is_none() {
+            push(
+                "Topics".into(),
+                found
+                    .topics
+                    .iter()
+                    .filter(|t| t.strength >= 60)
+                    .take(TOPICS_SHOWN)
+                    .map(|t| Row::Topic {
+                        name: t.topic.name.clone(),
+                        passages: t.topic.passages,
+                    })
+                    .collect(),
+            );
+        }
+        let mut rows: Vec<Row> = found
+            .hits
+            .into_iter()
+            .take(VERSES_SHOWN)
+            .map(Row::Verse)
+            .collect();
+        if !rows.is_empty() {
+            let full_query = match &scope {
+                Some(_) => format!("{} {}", query, raw_scope(raw)),
+                None => query.to_string(),
+            };
+            rows.push(Row::SeeAll {
+                query: full_query.trim().to_string(),
+                total: found.total,
+            });
+        }
+        push(heading, rows);
     }
     if scope.is_none() {
         push(
@@ -255,6 +339,14 @@ pub fn build(query: &str, cx: &Context) -> Vec<Group> {
         );
     }
     groups
+}
+
+/// The `in:` words of a raw query, to carry a scope over to the search page.
+fn raw_scope(raw: &str) -> String {
+    raw.split_whitespace()
+        .filter(|w| w.len() > 3 && w[..3].eq_ignore_ascii_case("in:"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn tabs(query: &str, cx: &Context) -> Vec<Row> {
@@ -445,14 +537,27 @@ fn matches(query: &str, label: &str, keywords: &[&str]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use bible_store::{Topic, TopicMatch};
+
     use super::*;
 
     fn with<R>(query: &str, f: impl FnOnce(Vec<Group>) -> R) -> R {
-        let search = |q: &str, books: RangeInclusive<u8>| {
-            vec![SearchHit {
+        let search = |q: &str, books: RangeInclusive<u8>| Results {
+            topics: vec![TopicMatch {
+                topic: Topic {
+                    id: 1,
+                    name: q.to_string(),
+                    passages: 9,
+                },
+                strength: if q == "love" { 100 } else { 0 },
+            }],
+            hits: vec![SearchHit {
                 verse: VerseId::new(*books.start(), 13, 4),
                 text: format!("hit for {q}"),
-            }]
+                score: 1.,
+                in_topic: false,
+            }],
+            total: 42,
         };
         let recent = [(19, 23), (43, 3)];
         let cx = Context {
@@ -470,6 +575,7 @@ mod tests {
             active_pinned: false,
             split: false,
             search: &search,
+            suggestions: vec!["pride", "fear not"],
         };
         f(build(query, &cx))
     }
@@ -483,7 +589,7 @@ mod tests {
         with("", |groups| {
             assert_eq!(
                 headings(&groups),
-                ["Tabs", "Recent", "Commands", "Appearance"]
+                ["Tabs", "Recent", "Try searching", "Commands", "Appearance"]
             );
             // The active tab and the current chapter are left out.
             assert_eq!(groups[0].rows.len(), 1);
@@ -520,7 +626,11 @@ mod tests {
     #[test]
     fn words_search_verses_and_commands() {
         with("love", |groups| {
-            assert_eq!(headings(&groups), ["Verses"]);
+            assert_eq!(headings(&groups), ["Topics", "Verses"]);
+            assert_eq!(groups[0].rows[0].label(), "Topic: love · 9 passages");
+            // The last verse row opens everything on the search page.
+            let last = groups[1].rows.last().unwrap();
+            assert_eq!(last.label(), "See all 42 results for “love”");
         });
         with("sepia", |groups| {
             assert_eq!(headings(&groups), ["Verses", "Appearance"]);

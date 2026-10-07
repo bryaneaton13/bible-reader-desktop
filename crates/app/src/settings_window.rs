@@ -4,6 +4,7 @@
 //! `ReaderView` repaints because it observes that global.
 
 use gpui_kit::base::Root;
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage,
     Settings as SettingsPanel,
@@ -189,7 +190,32 @@ fn pages() -> Vec<SettingPage> {
             ]),
         );
 
-    vec![reading, appearance]
+    let about = SettingPage::new("About")
+        .description("Where the text and study data come from.")
+        .group(
+            SettingGroup::new()
+                .title("Credits")
+                .item(SettingItem::render(|_, _, cx| {
+                    let library = cx.global::<crate::library::Library>();
+                    let mut lines: Vec<String> = library
+                        .translations
+                        .iter()
+                        .map(|t| format!("{}: {}", t.info.abbrev, t.info.copyright))
+                        .collect();
+                    if let Some(study) = &library.study {
+                        lines.push(study.attribution.clone());
+                    }
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .children(lines)
+                })),
+        );
+
+    vec![reading, appearance, about]
 }
 
 impl Render for SettingsView {

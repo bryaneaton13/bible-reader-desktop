@@ -6,7 +6,7 @@
 #   scripts/shot.sh /tmp/ps23.png "ps 23:2" "sepia,notes"
 #
 # ACTIONS (comma-separated): light, sepia, dark, system, notes, nosidebar,
-# version:kjv, palette:<query>, commands:<query>, goto:<passage>, back,
+# version:kjv, search:<query> (results page; ~ = space), palette:<query>, commands:<query>, goto:<passage>, back,
 # forward, newtab, closetab, tab:<n>, pin (active tab), rename:<name>,
 # sidebar (focus the sidebar chapter cursor), split[:<passage>] (split right,
 # optionally navigating the new pane), unsplit, closepane, focus:left|right,

@@ -42,6 +42,7 @@ The app keeps running in the menu bar after you close the window. Quit from the 
 |---|---|
 | ⌘K / ⌘P (also ⌘L / ⌘F) | Palette: go to a passage (`jn 3:16`, `1 cor 13`, `ps 23`), search words, switch tabs, reopen recent chapters, run commands |
 | ⇧⌘P | Palette with commands only (or type `>`) |
+| ⇧⌘F | Search results page: topics (try `pride`), match mode, testament / book / version filters, related verses, open in a new tab or beside |
 | ⌘T / ⌘W / ⇧⌘T | New tab / close tab / reopen closed tab |
 | ⌃Tab / ⌃⇧Tab (or ⇧⌘] / ⇧⌘[) | Next / previous tab |
 | ← / → (or ⌘[ / ⌘], ⌥← / ⌥→) | Previous / next chapter |
@@ -80,12 +81,13 @@ Steps (comma-separated): `light`, `sepia`, `dark`, `system`, `notes`, `nosidebar
 ```
 crates/
   bible-core/    domain types: books, VerseId, reference parser, chapter content model (no UI, no DB)
-  bible-store/   SQLite: one read-only DB per translation, FTS5 search
+  bible-store/   SQLite: one read-only DB per translation (FTS5 search), plus study.db (topics, cross-references)
   bible-import/  USFM parser + importer CLI
   app/           GPUI app: reader window, tabs, ⌘K palette, notes panel, menu bar item (gpui-tray)
 data/
   sources/       USFM inputs
-  build/         generated .sqlite (gitignored)
+  openbible/     topics + cross-references (CC-BY, openbible.info)
+  build/         generated .sqlite / study.db (gitignored)
 scripts/         shot.sh (offscreen screenshot), bundle.sh (.app), make-icon.swift
 assets/          AppIcon.icns
 docs/            research and plans

@@ -9,15 +9,17 @@ Offline macOS Bible reader. Rust workspace, UI in GPUI through `gpui-kit` (crate
 ```
 crates/
   bible-core/    domain types: books, VerseId/ChapterRef, reference parser ("jn 3:16"), Block/Span content model. No UI, no DB.
-  bible-store/   SQLite per translation (read-only), chapter JSON blobs, FTS5 search.
-  bible-import/  USFM parser + importer CLI: data/sources/*.usfm -> data/build/*.sqlite
+  bible-store/   SQLite per translation (read-only), chapter JSON blobs, FTS5 (porter-stemmed) search. `study.rs`: topics, aliases, cross-references (study.db). `search.rs`: ranked search (bm25 + topic + phrase + popularity).
+  bible-import/  USFM parser + importer CLI: data/sources/*.usfm -> data/build/*.sqlite, data/sources/openbible -> data/build/study.db
   app/           GPUI app (binary `bible-reader`)
     main.rs         actions, key bindings, app menus, window, `screenshot` dev feature
     reader.rs       ReaderView: title-bar toolbar, tab bar, sidebar, chapter, notes panel, palette host; headless UI tests
     selectable.rs  SelectableBlock: wraps a chapter block's InteractiveText so Root's text selection (drag, ⌘C) works with styled runs
     tabs.rs         Tab (location, translation, back/forward, scroll, optional `side` pane for split view) + save/restore; unit tests
     settings_window.rs  Settings window (⌘,): font, size, line spacing, width, theme; gpui-kit `setting`
-    palette.rs      ⌘K palette rows (Go to / Tabs / Recent / Commands / Verses), each carrying its Action; unit tests
+    palette.rs      ⌘K palette rows (Go to / Tabs / Recent / Try searching / Commands / Topics / Verses), each carrying its Action; unit tests
+    search_page.rs  search results page (⇧⌘F; child module of reader.rs): filters, key passages for a topic, ranked matches with highlights, related verses, open here / new tab / beside
+    suggestions.rs  rotating suggested searches; a test checks each returns good results
     translation_picker.rs  rows for the searchable translation Select
     chapter_view.rs Block -> styled text runs (verse numbers, red letter, notes, jump highlight); unit tests
     fonts.rs        bundled typefaces (assets/fonts/*.ttf, OFL) registered at startup for the font pairings
@@ -125,6 +127,7 @@ This builds with `--features screenshot` and runs the real app with a throwaway 
   - `notes` opens the footnotes panel and selects the first note.
   - `nosidebar` hides the sidebar.
   - `version:kjv` switches translation.
+  - `search:<query>` opens the search results page (`~` stands for a space, e.g. `search:in:nt~pride`; bare `search:` shows suggestions).
   - `palette:<query>` opens the ⌘K palette with a query. `palette:` with an empty query shows tabs, recent chapters and commands.
   - `commands:<query>` opens the palette in commands-only mode (⇧⌘P).
   - `goto:<passage>`, `back`, `forward` navigate the active tab.
@@ -148,6 +151,7 @@ Live capture and synthetic input (`osascript ... keystroke`, `cliclick`) need Sc
 
 ## Gotchas learned the hard way
 
+- **Search:** `bible_store::search` blends bm25 over a porter-stemmed FTS5 index with topic membership (`study.db`), exact phrases and verse popularity (cross-reference votes). Quotes make a phrase, `-word` excludes. Topic aliases live in `data/sources/openbible/aliases.txt`. The FTS tokenizer changed, so rebuild data after pulling (`cargo run --release -p bible-import`). Eyeball ranking with `cargo run -q --release -p bible-store --example probe -- "pride"`. `study.db` has the `.db` extension on purpose: `Library::load` treats every `*.sqlite` as a translation. The search page is a mode of the window (`ReaderView.search`), not a tab; `show_active` closes it, and ⌘Enter opens tabs behind it with `open_in_background_tab`.
 - **Split view:** a split is one tab with two panes. `Tab.side: Option<Box<Tab>>` is the right pane (a `Tab` reused for its location, translation, history and scroll); `focus_side` says which pane navigation applies to. `ReaderView::tab()` / `tab_mut()` return the *focused* pane, so sidebar, ⌘K, ⌘[ ⌘], ⌘1–3 and the notes panel just work on it. Chapter text lives in `ReaderView.content` keyed by pane id, loaded in `show_active` (focused pane, plus the other pane if missing). `Settings.translation` mirrors the focused pane. Clicking or selecting text in a pane focuses it (capture-phase mouse down on the pane frame). Each pane header has its own translation `Select` (`translation_select` left, `side_select` right); the toolbar one only shows when not split. Below `SPLIT_MIN_WIDTH` (760pt of content) only the focused pane shows, with a switcher row. Only two panes, and a split tab can't be dropped into another.
 
 - **Fonts:** `Settings.font_pairing` (`library::FontPairing`) picks body, display (titles, headings) and verse-number families. Bundled fonts are static Regular/Bold/Italic TTFs, subset to Latin, and `include_bytes!`'d in `fonts.rs`. Variable fonts don't pick weights on GPUI/macOS, so re-cut new ones with fonttools `varLib.instancer`, then fix the name table so each family is a plain Regular/Bold/Italic set. Verse numbers use `sups`; Lora and Outfit lack superscript digits 0 and 5-9, hence `FontPairing::numbers()`.
@@ -164,4 +168,4 @@ Live capture and synthetic input (`osascript ... keystroke`, `cliclick`) need Sc
 
 ## Keyboard map (keep README in sync)
 
-⌘K / ⌘P / ⌘L / ⌘F palette · ⇧⌘P commands · ⌘T new tab · ⌘W close tab (last tab closes the window) · ⇧⌘T reopen closed tab · ⌃Tab / ⌃⇧Tab or ⇧⌘] / ⇧⌘[ next/previous tab · ⇧⌘W close window · ← → / ⌘[ ⌘] / ⌥← ⌥→ prev/next chapter · ⌘Enter in palette: open in new tab · ⌥Enter in palette: open beside (split) · ⌘\ split right / unsplit · ⇧⌘\ close pane · ⌘⌥← ⌘⌥→ focus left/right pane · drag a tab onto the left or right half of the text to split, drag a pane header to the tab strip to unsplit · `in:nt` / `in:john` scopes a palette search · ⌘, settings · ⌘B sidebar · ⌥⌘B focus sidebar (arrows move, Enter opens, ⌥↑↓ book, Esc back) · ⌃⌘← ⌃⌘→ back/forward · ⌘1–3 translation · ⌘+ ⌘− ⌘0 text size · ⌃⌘S sidebar · ⌥⌘N notes · drag to select text, ⌘C copy · ⇧⌘C copy verse with citation · ⌥⌘C copy chapter · ⇧⌘L dark/light · View ▸ Theme for Sepia / System.
+⌘K / ⌘P / ⌘L / ⌘F palette · ⇧⌘F search results page (↑↓ select, Enter open, ⌘Enter new tab behind the page, ⇧Enter beside, Esc back) ·  ⇧⌘P commands · ⌘T new tab · ⌘W close tab (last tab closes the window) · ⇧⌘T reopen closed tab · ⌃Tab / ⌃⇧Tab or ⇧⌘] / ⇧⌘[ next/previous tab · ⇧⌘W close window · ← → / ⌘[ ⌘] / ⌥← ⌥→ prev/next chapter · ⌘Enter in palette: open in new tab · ⌥Enter in palette: open beside (split) · ⌘\ split right / unsplit · ⇧⌘\ close pane · ⌘⌥← ⌘⌥→ focus left/right pane · drag a tab onto the left or right half of the text to split, drag a pane header to the tab strip to unsplit · `in:nt` / `in:john` scopes a palette search · ⌘, settings · ⌘B sidebar · ⌥⌘B focus sidebar (arrows move, Enter opens, ⌥↑↓ book, Esc back) · ⌃⌘← ⌃⌘→ back/forward · ⌘1–3 translation · ⌘+ ⌘− ⌘0 text size · ⌃⌘S sidebar · ⌥⌘N notes · drag to select text, ⌘C copy · ⇧⌘C copy verse with citation · ⌥⌘C copy chapter · ⇧⌘L dark/light · View ▸ Theme for Sepia / System.

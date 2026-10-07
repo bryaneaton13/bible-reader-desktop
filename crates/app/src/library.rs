@@ -4,13 +4,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use bible_core::{ChapterRef, VerseId};
-use bible_store::Translation;
+use bible_store::{Results, SearchRequest, Study, Translation, search};
 use gpui_kit::{App, Global};
 use serde::{Deserialize, Serialize};
 
 /// All translations found in the data directory, in display order.
 pub struct Library {
     pub translations: Vec<Translation>,
+    /// Topics and cross-references (`study.db`); search still works without.
+    pub study: Option<Study>,
 }
 
 impl Global for Library {}
@@ -38,7 +40,18 @@ impl Library {
                 .position(|a| *a == t.info.abbrev)
                 .unwrap_or(usize::MAX)
         });
-        Ok(Self { translations })
+        let study = Study::open(&dir.join("study.db"))
+            .map_err(|err| eprintln!("warning: no study data ({err:#})"))
+            .ok();
+        Ok(Self {
+            translations,
+            study,
+        })
+    }
+
+    /// Ranked search in one translation, blended with topics when available.
+    pub fn search(&self, translation: &Translation, request: &SearchRequest) -> Results {
+        search(translation, self.study.as_ref(), request)
     }
 
     pub fn index_of(&self, abbrev: &str) -> Option<usize> {

@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use bible_core::{BOOKS, Block, BlockKind, ChapterRef, Note, NoteKind, Testament, VerseId};
+use bible_store::Passage;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -26,8 +27,9 @@ use crate::library::{
 };
 use crate::palette::{
     self, ActivateTab, COMMAND_PREFIX, CloseTabAt, OpenPassage, PinTab, RenameTab, Row,
-    SEARCH_LIMIT, SearchIn,
+    SEARCH_LIMIT, SUGGESTIONS_SHOWN, SearchIn, SetPaletteQuery,
 };
+use crate::suggestions;
 use crate::tabs::{Location, Tab};
 use crate::translation_picker::TranslationItem;
 use crate::{
@@ -38,6 +40,10 @@ use crate::{
     SidebarDown, SidebarLeft, SidebarNextBook, SidebarOpen, SidebarPrevBook, SidebarRight,
     SidebarUp, ToggleInspector, ToggleRedLetter, ToggleSidebar, ToggleSplit, ToggleVerseNumbers,
 };
+
+#[path = "search_page.rs"]
+mod search_page;
+use search_page::SearchPage;
 
 /// Verse (or whole chapter) text with a citation and, for translations that
 /// aren't public domain, the copyright notice.
@@ -179,6 +185,8 @@ pub struct ReaderView {
     sidebar_book: Option<u8>,
     scroll_sidebar: Cell<Option<SidebarTarget>>,
     palette_open: bool,
+    /// Times the palette opened, to rotate its suggested searches.
+    palette_opens: usize,
     /// An action run from the palette has taken over, so its on-confirm
     /// callback must not close or refocus anything.
     palette_handed_off: bool,
@@ -196,6 +204,13 @@ pub struct ReaderView {
     drop_zone: Option<bool>,
     /// Show one pane at a time even when the window is wide.
     force_collapsed: bool,
+    /// The search results page, when open (it covers the panes).
+    search: Option<SearchPage>,
+    search_input: Entity<InputState>,
+    /// Pages opened so far, so suggested searches keep changing.
+    search_opens: usize,
+    /// Per-launch offset into the suggestion list.
+    suggestion_seed: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -254,11 +269,16 @@ impl ReaderView {
         let rename_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Tab name (blank shows the passage)")
         });
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Search words, a topic like “pride”, or \"a phrase\"")
+        });
 
         let subscriptions = vec![
             cx.subscribe_in(&translation_select, window, Self::on_translation_selected),
             cx.subscribe_in(&side_select, window, Self::on_side_translation_selected),
             cx.subscribe_in(&rename_input, window, Self::on_rename_input),
+            cx.subscribe_in(&search_input, window, Self::on_search_input),
             // Settings window changes and menu actions repaint the reader.
             cx.observe_global::<Settings>(|_, cx| cx.notify()),
             cx.observe_window_appearance(window, |_, window, cx| {
@@ -288,6 +308,7 @@ impl ReaderView {
             selected_note: None,
             inspector_open: false,
             palette_open: false,
+            palette_opens: 0,
             palette,
             palette_groups: Vec::new(),
             translation_select,
@@ -295,6 +316,12 @@ impl ReaderView {
             split_state,
             drop_zone: None,
             force_collapsed: false,
+            search: None,
+            search_input,
+            search_opens: 0,
+            suggestion_seed: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs() as usize / 3600),
             _subscriptions: subscriptions,
         };
         this.show_active(cx);
@@ -335,6 +362,7 @@ impl ReaderView {
     /// Load the focused pane's chapter, scroll to its verse, make sure the
     /// other pane has text too, and persist.
     fn show_active(&mut self, cx: &mut Context<Self>) {
+        self.search = None;
         let focused = self.tab();
         let (id, location, abbrev) = (focused.id, focused.location, focused.translation.clone());
         let scroll = focused.scroll.clone();
@@ -835,6 +863,7 @@ impl ReaderView {
 
     fn show_palette(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.palette_open = true;
+        self.palette_opens += 1;
         self.palette.update(cx, |state, cx| {
             state.set_query(query.to_string(), window, cx);
             state.focus(window, cx);
@@ -886,15 +915,39 @@ impl ReaderView {
         self.show_palette(&format!("in:{} ", action.scope), window, cx);
     }
 
+    /// Suggested searches for this opening of the palette.
+    fn palette_suggestions(&self) -> Vec<&'static str> {
+        suggestions::pick(self.palette_opens + self.suggestion_seed, SUGGESTIONS_SHOWN)
+    }
+
+    /// Replace the palette's text with a suggested search.
+    fn set_palette_query(
+        &mut self,
+        action: &SetPaletteQuery,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.palette_handed_off = self.palette_open;
+        let opens = self.palette_opens;
+        self.show_palette(&action.query, window, cx);
+        self.palette_opens = opens;
+    }
+
     fn refresh_palette(&mut self, cx: &mut Context<Self>) {
         let query = self.palette.read(cx).query(cx).to_string();
         let settings = cx.global::<Settings>();
         let library = cx.global::<Library>();
         let translation = current_translation(cx);
         let search = |q: &str, books| {
-            translation
-                .search_in(q, books, SEARCH_LIMIT)
-                .unwrap_or_default()
+            library.search(
+                translation,
+                &bible_store::SearchRequest {
+                    query: q,
+                    mode: bible_store::MatchMode::All,
+                    books,
+                    limit: SEARCH_LIMIT,
+                },
+            )
         };
         let context = palette::Context {
             current: self.chapter(),
@@ -912,6 +965,7 @@ impl ReaderView {
             font_pairing: settings.font_pairing,
             active_pinned: self.tabs[self.active].pinned,
             search: &search,
+            suggestions: self.palette_suggestions(),
         };
         self.palette_groups = palette::build(&query, &context);
         cx.notify();
@@ -1817,8 +1871,8 @@ impl ReaderView {
     }
 
     fn render_inspector(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let translation = current_translation(cx);
+        let theme = cx.theme().clone();
+        let abbrev = current_translation(cx).info.abbrev.clone();
         let no_content = Content::default();
         let notes = &self.focused_content().unwrap_or(&no_content).notes;
         let mut list = div()
@@ -1829,6 +1883,9 @@ impl ReaderView {
             .overflow_y_scroll()
             .size_full()
             .p_3();
+        if let Some(related) = self.render_related_verses(cx) {
+            list = list.child(related);
+        }
         if notes.is_empty() {
             list = list.child(
                 div()
@@ -1905,7 +1962,7 @@ impl ReaderView {
                     .text_color(theme.muted_foreground)
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(format!("NOTES · {}", translation.info.abbrev))
+                    .child(format!("NOTES · {abbrev}"))
                     .child(
                         Button::new("close-notes")
                             .icon(IconName::Close)
@@ -1919,6 +1976,64 @@ impl ReaderView {
                     ),
             )
             .child(list)
+    }
+
+    /// Cross-references for the verse the reader jumped to, above the notes.
+    /// `None` when there is no verse or nothing related.
+    fn render_related_verses(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let theme = cx.theme().clone();
+        let verse = self.target()?;
+        let passages = cx.global::<Library>().study.as_ref()?.related(verse, 6);
+        if passages.is_empty() {
+            return None;
+        }
+        let translation = current_translation(cx);
+        let rows: Vec<(Passage, String)> = passages
+            .into_iter()
+            .map(|p| {
+                let text = translation.passage_text(&p, 2).unwrap_or_default();
+                (p, text)
+            })
+            .collect();
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .pb_2()
+            .mb_1()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.muted_foreground)
+                    .child(format!("RELATED · {verse}")),
+            );
+        for (ix, (passage, text)) in rows.into_iter().enumerate() {
+            let target = passage.start;
+            section = section.child(
+                div()
+                    .id(("related", ix))
+                    .p_2()
+                    .rounded_md()
+                    .text_sm()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(theme.muted))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.go_to(target.chapter_ref(), Some(target), cx);
+                    }))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.primary)
+                            .child(passage.label()),
+                    )
+                    .child(div().line_clamp(3).child(text)),
+            );
+        }
+        Some(section)
     }
 
     fn render_palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1949,7 +2064,13 @@ impl ReaderView {
 
         let mut command = Command::new(&self.palette)
             .filterable(false)
-            .placeholder("Go to a passage (jn 3:16), search words, or type > for commands")
+            .placeholder(format!(
+                "Go to a passage (jn 3:16), or search. Try “{}”",
+                self.palette_suggestions()
+                    .first()
+                    .copied()
+                    .unwrap_or("pride")
+            ))
             .max_h(px(440.))
             .on_query({
                 let view = view.clone();
@@ -1998,6 +2119,9 @@ impl ReaderView {
                     Row::Tab { .. } => item.icon(IconName::GalleryVerticalEnd),
                     Row::Recent(_) => item.icon(IconName::FileText),
                     Row::Command { .. } => item,
+                    Row::Topic { .. } => item.icon(IconName::BookOpen),
+                    Row::SeeAll { .. } => item.icon(IconName::Search),
+                    Row::Suggestion(_) => item.icon(IconName::Search),
                     Row::Verse(hit) => {
                         let reference = hit.verse.to_string();
                         let text = hit.text.clone();
@@ -2236,6 +2360,10 @@ impl ReaderView {
         let (name, arg) = action.split_once(':').unwrap_or((action, ""));
         match name {
             "palette" => self.show_palette(arg, window, cx),
+            "search" => {
+                let query = arg.replace('~', " ");
+                self.open_search_page(&crate::palette::OpenSearchPage { query }, window, cx);
+            }
             "commands" => self.show_palette(&format!("{COMMAND_PREFIX}{arg}"), window, cx),
             "notes" => {
                 self.inspector_open = true;
@@ -2359,6 +2487,8 @@ impl Render for ReaderView {
             .on_action(cx.listener(Self::copy_verse))
             .on_action(cx.listener(Self::copy_chapter))
             .on_action(cx.listener(Self::search_in))
+            .on_action(cx.listener(Self::open_search_page))
+            .on_action(cx.listener(Self::set_palette_query))
             .on_action(cx.listener(Self::focus_sidebar))
             .on_action(cx.listener(|this, _: &IncreaseFont, _, cx| {
                 this.update_settings(cx, |s| {
@@ -2413,7 +2543,11 @@ impl Render for ReaderView {
                     .flex_1()
                     .min_h_0()
                     .when(sidebar_open, |d| d.child(self.render_sidebar(window, cx)))
-                    .child(self.render_panes(window, cx))
+                    .child(if self.search.is_some() {
+                        self.render_search_page(cx).into_any_element()
+                    } else {
+                        self.render_panes(window, cx).into_any_element()
+                    })
                     .when(self.inspector_open, |d| d.child(self.render_inspector(cx))),
             )
             .when(self.palette_open, |d| d.child(self.render_palette(cx)))
@@ -2712,6 +2846,145 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn palette_suggests_searches_and_offers_topics(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        let study = cx.update(|cx| cx.global::<Library>().study.is_some());
+        with_window(window, cx, |window, cx| window.press("cmd-k", cx));
+        view.read_with(cx, |v, _| {
+            let group = v
+                .palette_groups
+                .iter()
+                .find(|g| g.heading == "Try searching")
+                .expect("suggestions on an empty palette");
+            assert_eq!(group.rows.len(), SUGGESTIONS_SHOWN);
+        });
+        // Picking one fills in the query and searches.
+        let suggestion = view.read_with(cx, |v, _| {
+            let group = v
+                .palette_groups
+                .iter()
+                .find(|g| g.heading == "Try searching")
+                .unwrap();
+            group.rows[0].action()
+        });
+        with_window(window, cx, |window, cx| {
+            window.dispatch_action(suggestion, cx)
+        });
+        view.read_with(cx, |v, cx| {
+            assert!(v.palette_open);
+            assert!(!v.palette.read(cx).query(cx).is_empty());
+            assert!(v.palette_groups.iter().any(|g| g.heading == "Verses"));
+        });
+        with_window(window, cx, |window, cx| {
+            window.press("cmd-a", cx);
+            window.input("pride", cx);
+        });
+        view.read_with(cx, |v, _| {
+            let topics = v.palette_groups.iter().find(|g| g.heading == "Topics");
+            if study {
+                assert_eq!(
+                    topics.expect("topic rows").rows[0]
+                        .label()
+                        .split(" · ")
+                        .next(),
+                    Some("Topic: pride")
+                );
+            }
+        });
+    }
+
+    #[gpui_kit::test]
+    fn search_page_filters_and_opens_results(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        let study = cx.update(|cx| cx.global::<Library>().study.is_some());
+        let open_page = |query: &str| crate::palette::OpenSearchPage {
+            query: query.to_string(),
+        };
+        with_window(window, cx, |window, cx| {
+            window.dispatch_action(Box::new(open_page("pride")), cx)
+        });
+        view.read_with(cx, |v, _| {
+            let page = v.search.as_ref().expect("page opens");
+            assert_eq!(page.text, "pride");
+            assert!(page.entries.len() > 5);
+            if study {
+                assert_eq!(page.topic.as_deref(), Some("pride"));
+                assert!(page.entries[0].key);
+            }
+        });
+
+        // Typing re-runs the search; scope and mode filters narrow it.
+        with_window(window, cx, |window, cx| {
+            window.click(("sp-scope", 2usize), cx);
+        });
+        view.read_with(cx, |v, _| {
+            let page = v.search.as_ref().unwrap();
+            assert!(page.entries.iter().all(|e| e.verse.book() >= 40));
+        });
+
+        // Down moves the selection; Enter opens it here and closes the page.
+        with_window(window, cx, |window, cx| window.press("down", cx));
+        let second = view.read_with(cx, |v, _| {
+            let page = v.search.as_ref().unwrap();
+            assert_eq!(page.selected, 1);
+            page.entries[1].verse
+        });
+        with_window(window, cx, |window, cx| window.press("cmd-enter", cx));
+        view.read_with(cx, |v, _| {
+            // A new tab opened behind the page, which stays up.
+            assert!(v.search.is_some());
+            assert_eq!(v.tabs.len(), 2);
+            assert_eq!(v.active, 0);
+            assert_eq!(v.tabs[1].location.verse, Some(second));
+            assert!(v.search.as_ref().unwrap().opened.contains(&second));
+        });
+        with_window(window, cx, |window, cx| window.press("enter", cx));
+        view.read_with(cx, |v, _| {
+            assert!(v.search.is_none());
+            assert_eq!(v.tabs.len(), 2);
+            assert_eq!(v.tab().location.verse, Some(second));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn search_page_closes_with_escape_and_when_navigating(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        with_window(window, cx, |window, cx| window.press("cmd-shift-f", cx));
+        view.read_with(cx, |v, _| {
+            let page = v.search.as_ref().expect("cmd-shift-f opens the page");
+            assert!(page.text.is_empty());
+            assert_eq!(page.suggestions.len(), 8);
+        });
+        with_window(window, cx, |window, cx| window.press("escape", cx));
+        view.read_with(cx, |v, _| assert!(v.search.is_none()));
+
+        with_window(window, cx, |window, cx| {
+            window.dispatch_action(
+                Box::new(crate::palette::OpenSearchPage {
+                    query: "in:john love".into(),
+                }),
+                cx,
+            )
+        });
+        view.read_with(cx, |v, _| {
+            let page = v.search.as_ref().unwrap();
+            assert_eq!(page.text, "love");
+            assert_eq!(page.scope.as_ref().unwrap().label, "John");
+            assert!(page.entries.iter().all(|e| e.verse.book() == 43));
+        });
+        with_window(window, cx, |window, cx| window.click("next", cx));
+        view.read_with(cx, |v, _| {
+            assert!(v.search.is_none(), "navigating closes it")
+        });
+    }
+
+    #[gpui_kit::test]
     fn palette_search_can_be_scoped(cx: &mut TestAppContext) {
         let Some((window, view)) = open(cx) else {
             return;
@@ -2730,6 +3003,7 @@ mod tests {
             assert_eq!(group.heading, "Verses in New Testament");
             assert!(group.rows.iter().all(|r| match r {
                 Row::Verse(hit) => hit.verse.book() >= 40,
+                Row::SeeAll { query, .. } => query.contains("in:nt"),
                 _ => false,
             }));
         });

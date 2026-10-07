@@ -23,7 +23,7 @@ echo "==> Assembling $app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/data"
 cp target/release/bible-reader "$app/Contents/MacOS/bible-reader"
-cp data/build/*.sqlite "$app/Contents/Resources/data/"
+cp data/build/*.sqlite data/build/study.db "$app/Contents/Resources/data/"
 cp assets/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 
 cat > "$app/Contents/Info.plist" <<EOF

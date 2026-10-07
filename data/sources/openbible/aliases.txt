@@ -1,0 +1,141 @@
+# Words people search for that should land on a topic: "topic: alias, alias".
+# The importer drops lines whose topic is not in topic-scores.txt.
+pride: arrogant, haughty, haughtiness, conceited, boastful, self righteous
+humility: humble, meek, meekness, lowly, lowliness
+worry: worried, worrying, fret, fretting, cares
+anxiety: anxious, nervous, uneasy, panic, panic attacks
+fear: afraid, scared, terror, dread, fearful, do not be afraid, fear not
+courage: brave, bravery, bold, boldness, be strong, strong and courageous
+love: charity, beloved, loving others, agape
+forgiveness: forgive, forgiven, pardon, forgiving
+grace: unmerited favor, saved by grace
+mercy: merciful, pity, lovingkindness
+faith: believe, belief, believing, faithful
+hope: hopeful, hopeless, expectation
+joy: rejoice, rejoicing, gladness, happiness, happy
+peace: peaceful, calm, tranquility, serenity
+patience: patient, longsuffering, waiting on god, wait
+wisdom: wise, prudence, discernment, understanding
+money: finances, finance, cash, budget, debt, lending, borrowing
+wealth: wealthy, rich, riches, prosperity
+anger: angry, wrath, rage, fury, temper
+lust: lustful, lustful thoughts, sexual temptation
+temptation: tempted, tempt, enticement
+sin: sinful, sinner, transgression, iniquity, trespass
+salvation: saved, savior, redemption, redeemed
+heaven: paradise, afterlife, heavenly
+hell: damnation, lake of fire, gehenna, eternal punishment
+prayer: pray, praying, intercession, supplication
+fasting: fast
+healing: healed, heal, sickness, illness, disease, health
+death: dying, die, mortality, funeral
+suffering: affliction, hardship, pain, persecution
+trials: testing, tribulation, adversity, difficulties, hard times
+marriage: husband, wife, spouse, wedding, husbands and wives
+divorce: remarriage, separation
+children: kids, child, sons, daughters
+parenting: raising children, discipline of children, train up a child
+friendship: friend, friends, companionship
+loneliness: lonely, alone, isolation, abandoned
+depression: depressed, despair, despondent, downcast, sadness, sad
+grief: grieving, mourning, bereavement, loss of a loved one
+comfort: comforter, consolation, console
+strength: strong, weak, weakness, power
+guidance: guide, direction, gods will, will of god, leading
+trust: trusting, rely, reliance, confidence
+obedience: obey, obedient, disobedience, submit
+repentance: repent, turn from sin, conversion
+gratitude: grateful, thanks, thanksgiving, thankfulness
+generosity: generous, giving, charity, almsgiving, offering
+tithing: tithe, tithes, firstfruits
+greed: greedy, covet, covetousness, avarice
+envy: envious, covetous
+jealousy: jealous, zeal
+gossip: gossiping, talebearer, rumors
+lying: lie, liar, deceit, deception, dishonesty
+truth: honest, honesty, true
+justice: just, fairness, injustice, oppression
+judgment: judge, judging, judgement, final judgment
+holy spirit: holy ghost, spirit of god, comforter, the spirit
+trinity: triune, godhead
+baptism: baptized, baptize
+communion: lords supper, eucharist, last supper, bread and wine
+resurrection: risen, rise again, easter
+creation: created, genesis, origin
+angels: angel, archangel, cherubim, seraphim
+satan: devil, lucifer, adversary, evil one
+demons: demon, demonic, unclean spirits, exorcism
+second coming: return of christ, coming of christ, parousia
+end times: last days, tribulation, rapture, apocalypse, armageddon
+rest: sabbath rest, rest for the weary, weary
+sabbath: lords day, day of rest
+work: labor, job, career, employment, vocation
+laziness: lazy, sloth, idle, idleness, slothful
+diligence: diligent, hard work, hardworking
+leadership: leader, leaders, leading, authority
+enemies: enemy, love your enemies, foes
+persecution: persecuted, martyr, martyrdom
+praise: glorify, glory
+idolatry: idol, idols, false gods, false god
+holiness: holy, consecration, set apart
+purity: pure, clean, chaste
+self control: self-control, temperance, discipline, restraint
+addiction: addicted, bondage, slavery to sin
+drunkenness: drunk, alcohol, drinking
+suicide: self harm, killing yourself
+sex: sexual immorality, intimacy, sexuality
+adultery: unfaithful, infidelity, affair
+old age: aging, elderly, gray hair, seniors
+widows: widow
+orphans: orphan, fatherless
+poor: poverty, needy, the poor, poor and needy
+poverty: destitute, want
+contentment: content, satisfied, satisfaction
+ambition: ambitious, striving
+success: successful, prosper, prosperity
+failure: fail, failing, mistakes
+doubt: doubting, unbelief, skeptic, uncertainty
+church: congregation, assembly, body of christ
+unity: united, one accord, harmony
+fathers: father, dad, dads
+mothers: mother, mom, moms
+family: household, parents, relatives
+slander: slandering, defamation, evil speaking
+bitterness: bitter, resentment, grudge
+revenge: vengeance, avenge, retaliation, vindictive
+reconciliation: reconcile, make peace
+law: commandments, torah, ten commandments
+gospel: good news, evangelism
+kingdom of god: kingdom of heaven, gods kingdom
+eternal life: everlasting life, immortality
+born again: new birth, regeneration, new creation
+sanctification: sanctified, growing in faith, spiritual growth
+righteousness: righteous, justified, justification
+conscience: guilt, guilty, shame
+heart: inner man, soul
+tongue: speech, words, speaking, mouth
+wine: strong drink, vineyard
+beauty: beautiful, glory, adornment, appearance
+light: lamp, shine, illumination
+darkness: dark, shadow, night
+blessing: blessings, bless, blessed
+curse: cursed, cursing
+purpose: meaning, destiny, plan, gods plan
+calling: called, vocation, ministry
+spiritual gifts: gifts of the spirit, charismata
+fruit of the spirit: fruits of the spirit
+armor of god: whole armor, spiritual armor
+spiritual warfare: battle, fighting the enemy
+miracles: miracle, signs and wonders, wonders
+tears: weeping, cry, crying
+compassion: compassionate, empathy
+kindness: kind, gentle, goodness
+gentleness: gentle, meekness
+boasting: boast, brag, bragging
+stress: overwhelmed, burden, burdens, burnout, pressure
+humble: humbled
+forgive: forgiven
+faithfulness: faithful, loyal, loyalty
+integrity: blameless, upright, uprightness
+broken heart: brokenhearted, crushed spirit
+perseverance: persevere, endure, endurance, press on, steadfast

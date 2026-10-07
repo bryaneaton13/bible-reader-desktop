@@ -29,6 +29,7 @@ Also done 2026-10-06: settings window (⌘,), footnote hover popovers, sidebar a
 
 ## Phase 2: Search + annotations (2 wk). Search done; annotations deferred with verse selection
 - FTS5 search with filters, result list, jump to verse.
+- Done 2026-10-07: ranked search (stemming, bm25 + topics + phrase + popularity), 6,000 openbible.info topics with aliases, cross-references ("Related" in notes panel and results), suggested searches, search results page (⇧⌘F) with filters and open here / new tab / beside. Next: Nave's / Torrey's topics, local vector search (see research notes).
 - Highlights, bookmarks, notes in `user.db`. Inspector pane.
 - Copy with citation (with version notice). Done 2026-10-06: ⇧⌘C verse, ⌥⌘C chapter, drag-select + ⌘C.
 

@@ -232,9 +232,59 @@ pub fn book_by_code(code: &str) -> Option<&'static Book> {
     BOOKS.iter().find(|b| b.code.eq_ignore_ascii_case(code))
 }
 
+/// OSIS book ids (as used by openbible.info), indexed by `Book::num - 1`.
+const OSIS: [&str; 66] = [
+    "Gen", "Exod", "Lev", "Num", "Deut", "Josh", "Judg", "Ruth", "1Sam", "2Sam", "1Kgs", "2Kgs",
+    "1Chr", "2Chr", "Ezra", "Neh", "Esth", "Job", "Ps", "Prov", "Eccl", "Song", "Isa", "Jer",
+    "Lam", "Ezek", "Dan", "Hos", "Joel", "Amos", "Obad", "Jonah", "Mic", "Nah", "Hab", "Zeph",
+    "Hag", "Zech", "Mal", "Matt", "Mark", "Luke", "John", "Acts", "Rom", "1Cor", "2Cor", "Gal",
+    "Eph", "Phil", "Col", "1Thess", "2Thess", "1Tim", "2Tim", "Titus", "Phlm", "Heb", "Jas",
+    "1Pet", "2Pet", "1John", "2John", "3John", "Jude", "Rev",
+];
+
+/// "John.3.16" -> John 3:16.
+pub fn parse_osis(osis: &str) -> Option<crate::VerseId> {
+    let mut parts = osis.trim().split('.');
+    let name = parts.next()?;
+    let book = OSIS.iter().position(|b| *b == name)? as u8 + 1;
+    let chapter = parts.next()?.parse().ok()?;
+    let verse = parts.next()?.parse().ok()?;
+    parts
+        .next()
+        .is_none()
+        .then(|| crate::VerseId::new(book, chapter, verse))
+}
+
+/// "John.3.16" or "Exod.20.1-Exod.20.26" -> first and last verse.
+pub fn parse_osis_range(osis: &str) -> Option<(crate::VerseId, crate::VerseId)> {
+    match osis.split_once('-') {
+        Some((a, b)) => Some((parse_osis(a)?, parse_osis(b)?)),
+        None => parse_osis(osis).map(|v| (v, v)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn osis_ids() {
+        assert_eq!(
+            parse_osis("John.3.16"),
+            Some(crate::VerseId::new(43, 3, 16))
+        );
+        assert_eq!(
+            parse_osis_range("Exod.20.1-Exod.20.26").unwrap().1,
+            crate::VerseId::new(2, 20, 26)
+        );
+        assert!(parse_osis("Nope.1.1").is_none());
+        for (i, id) in OSIS.iter().enumerate() {
+            assert_eq!(
+                parse_osis(&format!("{id}.1.1")).unwrap().book() as usize,
+                i + 1
+            );
+        }
+    }
 
     #[test]
     fn numbering_is_contiguous() {

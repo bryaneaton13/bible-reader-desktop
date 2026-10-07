@@ -2,6 +2,9 @@
 //!
 //! One read-only database file per translation, produced by `bible-import`.
 
+pub mod search;
+pub mod study;
+
 use std::ops::RangeInclusive;
 use std::path::Path;
 
@@ -9,7 +12,10 @@ use anyhow::{Context as _, Result};
 use bible_core::{Block, ChapterRef, Note, NoteKind, VerseId};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: &str = "1";
+pub use search::{MatchMode, ParsedQuery, Results, SearchRequest, search};
+pub use study::{BOOST_STRENGTH, Passage, Study, StudyWriter, Topic, TopicMatch};
+
+pub const SCHEMA_VERSION: &str = "2";
 
 const SCHEMA: &str = "
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -30,7 +36,11 @@ CREATE TABLE note(
     kind TEXT NOT NULL,                  -- footnote | cross_reference
     text TEXT NOT NULL
 );
-CREATE VIRTUAL TABLE verse_fts USING fts5(text, content='verse', content_rowid='id');
+-- Porter stemming (loved finds love); accents are ignored.
+CREATE VIRTUAL TABLE verse_fts USING fts5(
+    text, content='verse', content_rowid='id',
+    tokenize='porter unicode61 remove_diacritics 2'
+);
 ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,10 +50,14 @@ pub struct TranslationInfo {
     pub copyright: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SearchHit {
     pub verse: VerseId,
     pub text: String,
+    /// Ranking score from [`search`]; higher is better. 0 for plain lookups.
+    pub score: f32,
+    /// The verse is also listed under a topic the query matched.
+    pub in_topic: bool,
 }
 
 /// Writes a new translation database. Used only by the importer.
@@ -206,9 +220,61 @@ impl Translation {
             Ok(SearchHit {
                 verse: VerseId(r.get(0)?),
                 text: r.get(1)?,
+                score: 0.,
+                in_topic: false,
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(Into::into)
+    }
+
+    /// Matches for an FTS5 expression with their bm25 rank (lower is better),
+    /// best first. Used by [`search`].
+    pub(crate) fn fts_candidates(
+        &self,
+        expr: &str,
+        books: RangeInclusive<u8>,
+        limit: usize,
+    ) -> Result<Vec<(SearchHit, f64)>> {
+        let lo = VerseId::new(*books.start(), 0, 0).0;
+        let hi = VerseId::new(*books.end(), 999, 999).0;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT v.id, v.text, bm25(verse_fts) AS rank
+             FROM verse_fts JOIN verse v ON v.id = verse_fts.rowid
+             WHERE verse_fts MATCH ?1 AND v.id BETWEEN ?2 AND ?3
+             ORDER BY rank LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(params![expr, lo, hi, limit as i64], |r| {
+            Ok((
+                SearchHit {
+                    verse: VerseId(r.get(0)?),
+                    text: r.get(1)?,
+                    score: 0.,
+                    in_topic: false,
+                },
+                r.get::<_, f64>(2)?,
+            ))
+        })?;
+        rows.collect::<Result<_, _>>().map_err(Into::into)
+    }
+
+    /// Text of a passage: up to `max_verses` verses joined by spaces, with
+    /// "…" when the passage is longer.
+    pub fn passage_text(&self, passage: &Passage, max_verses: usize) -> Option<String> {
+        let verses = passage.verses();
+        let mut parts = Vec::new();
+        for id in verses.iter().take(max_verses) {
+            if let Ok(Some(text)) = self.verse_text(*id) {
+                parts.push(text);
+            }
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        let mut text = parts.join(" ");
+        if verses.len() > max_verses || passage.start.chapter_ref() != passage.end.chapter_ref() {
+            text.push('…');
+        }
+        Some(text)
     }
 
     pub fn verse_count(&self) -> Result<u32> {

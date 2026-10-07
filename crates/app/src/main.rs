@@ -6,6 +6,7 @@ mod palette;
 mod reader;
 mod selectable;
 mod settings_window;
+mod suggestions;
 mod tabs;
 mod translation_picker;
 mod tray;
@@ -53,6 +54,7 @@ actions!(
         FocusReader,
         OpenInNewTab,
         OpenInSplit,
+        CloseSearch,
         ToggleSplit,
         ClosePane,
         FocusLeftPane,
@@ -160,6 +162,12 @@ fn main() {
                 Menu::new("Go").items([
                     MenuItem::action("Go to Passage or Search…", OpenPalette),
                     MenuItem::action("Commands…", OpenCommands),
+                    MenuItem::action(
+                        "Search Results…",
+                        palette::OpenSearchPage {
+                            query: String::new(),
+                        },
+                    ),
                     MenuItem::separator(),
                     MenuItem::action("Next Chapter", NextChapter),
                     MenuItem::action("Previous Chapter", PrevChapter),
@@ -291,6 +299,14 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-k", OpenPalette, Some("Reader")),
         KeyBinding::new("cmd-l", OpenPalette, Some("Reader")),
         KeyBinding::new("cmd-f", OpenPalette, Some("Reader")),
+        KeyBinding::new(
+            "cmd-shift-f",
+            palette::OpenSearchPage {
+                query: String::new(),
+            },
+            Some("Reader"),
+        ),
+        KeyBinding::new("escape", CloseSearch, Some("SearchPage")),
         KeyBinding::new("escape", ClosePalette, Some("Palette")),
         KeyBinding::new("cmd-enter", OpenInNewTab, Some("Palette")),
         KeyBinding::new("alt-enter", OpenInSplit, Some("Palette")),
