@@ -37,6 +37,14 @@ pub(super) struct Entry {
     pub in_topic: bool,
 }
 
+/// One line of the virtualized results list.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Row {
+    KeyHeading,
+    Matches,
+    Entry(usize),
+}
+
 pub(super) struct SearchPage {
     pub text: String,
     pub mode: MatchMode,
@@ -50,7 +58,9 @@ pub(super) struct SearchPage {
     pub related: HashSet<VerseId>,
     /// Verses sent to a background tab from this page.
     pub opened: HashSet<VerseId>,
-    pub scroll: ScrollHandle,
+    /// Virtualized list: only rows in view are laid out.
+    pub list: ListState,
+    rows: Vec<Row>,
     /// "John 3" for the back button.
     pub came_from: String,
     /// Suggestions for an empty page.
@@ -134,6 +144,32 @@ impl SearchPage {
                 in_topic: hit.in_topic,
             });
         }
+        self.rebuild_rows();
+    }
+
+    fn rebuild_rows(&mut self) {
+        self.rows.clear();
+        let mut heading = (false, false);
+        for (ix, entry) in self.entries.iter().enumerate() {
+            if entry.key && !heading.0 {
+                heading.0 = true;
+                self.rows.push(Row::KeyHeading);
+            }
+            if !entry.key && !heading.1 {
+                heading.1 = true;
+                self.rows.push(Row::Matches);
+            }
+            self.rows.push(Row::Entry(ix));
+        }
+        self.list.reset(self.rows.len());
+        self.list.scroll_to(ListOffset {
+            item_ix: 0,
+            offset_in_item: px(0.),
+        });
+    }
+
+    fn row_of(&self, entry: usize) -> Option<usize> {
+        self.rows.iter().position(|r| *r == Row::Entry(entry))
     }
 }
 
@@ -188,7 +224,8 @@ impl ReaderView {
             selected: 0,
             related: HashSet::new(),
             opened: HashSet::new(),
-            scroll: ScrollHandle::new(),
+            list: ListState::new(0, ListAlignment::Top, px(600.)),
+            rows: Vec::new(),
             came_from,
             suggestions: suggestions::pick(
                 self.search_opens + self.suggestion_seed,
@@ -266,7 +303,9 @@ impl ReaderView {
         {
             let last = page.entries.len() as isize - 1;
             page.selected = (page.selected as isize + delta).clamp(0, last) as usize;
-            page.scroll.scroll_to_item(page.selected + 1);
+            if let Some(row) = page.row_of(page.selected) {
+                page.list.scroll_to_reveal_item(row);
+            }
             cx.notify();
         }
     }
@@ -527,10 +566,14 @@ impl ReaderView {
                                     .tooltip("Related verses")
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         cx.stop_propagation();
-                                        if let Some(page) = this.search.as_mut()
-                                            && !page.related.remove(&verse)
-                                        {
-                                            page.related.insert(verse);
+                                        if let Some(page) = this.search.as_mut() {
+                                            if !page.related.remove(&verse) {
+                                                page.related.insert(verse);
+                                            }
+                                            // Height changed: re-measure this row.
+                                            if let Some(row) = page.row_of(ix) {
+                                                page.list.splice(row..row + 1, 1);
+                                            }
                                         }
                                         cx.notify();
                                     })),
@@ -691,18 +734,7 @@ impl ReaderView {
                 ),
             );
 
-        let mut body = div()
-            .id("sp-body")
-            .track_scroll(&page.scroll)
-            .overflow_y_scroll()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .pb_6();
-
-        if empty {
+        let body = if empty {
             let chips = page.suggestions.iter().enumerate().map(|(ix, s)| {
                 let query = s.to_string();
                 Button::new(("sp-suggest", ix))
@@ -715,93 +747,40 @@ impl ReaderView {
                         });
                     }))
             });
-            body = body.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .p_3()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.muted_foreground)
-                            .child("Search words or topics. Put a phrase in quotes, and use -word to leave a word out."),
-                    )
-                    .child(div().flex().flex_wrap().gap_2().children(chips)),
-            );
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child("Search words or topics. Put a phrase in quotes, and use -word to leave a word out."),
+                )
+                .child(div().flex().flex_wrap().gap_2().children(chips))
         } else if page.entries.is_empty() {
-            body = body.child(
+            div().flex_1().min_h_0().child(
                 div()
                     .p_3()
                     .text_sm()
                     .text_color(theme.muted_foreground)
-                    .child(format!("No verses match “{}”.", page.text.trim())),
-            );
+                    .child(format!(
+                        "No verses match \u{201c}{}\u{201d}.",
+                        page.text.trim()
+                    )),
+            )
         } else {
-            let mut heading_done = (false, false);
-            for (ix, entry) in page.entries.iter().enumerate() {
-                if entry.key && !heading_done.0 {
-                    heading_done.0 = true;
-                    body = body.child(self.section_heading(
-                        &format!("Key passages on {}", page.topic.clone().unwrap_or_default()),
-                        cx,
-                    ));
-                    // Related topics, to move sideways.
-                    let others: Vec<String> = page
-                        .results
-                        .topics
-                        .iter()
-                        .map(|t| t.topic.name.clone())
-                        .filter(|n| Some(n) != page.topic.as_ref())
-                        .take(5)
-                        .collect();
-                    if !others.is_empty() {
-                        let chips = others.into_iter().enumerate().map(|(n, name)| {
-                            let q = name.clone();
-                            Button::new(("sp-topic", n))
-                                .label(name)
-                                .xsmall()
-                                .outline()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.search_input.update(cx, |input, cx| {
-                                        input.set_value(q.clone(), window, cx);
-                                    });
-                                }))
-                        });
-                        body = body.child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .items_center()
-                                .gap_1()
-                                .px_3()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .child("Also:"),
-                                )
-                                .children(chips),
-                        );
-                    }
-                }
-                if !entry.key && !heading_done.1 {
-                    heading_done.1 = true;
-                    let total = page.results.total;
-                    let shown = page.results.hits.len();
-                    let mut note = if total > shown {
-                        format!("Matches · best {shown} of {total}")
-                    } else {
-                        format!("Matches · {total}")
-                    };
-                    if let Some(fixed) = &page.results.corrected {
-                        note = format!("Showing results for “{fixed}” · {note}");
-                    }
-                    body = body.child(self.section_heading(&note, cx));
-                }
-                body = body.child(self.render_entry(ix, entry, page, cx));
-            }
-        }
+            div().flex_1().min_h_0().pb_6().child(
+                list(
+                    page.list.clone(),
+                    cx.processor(|this, ix: usize, _window, cx| this.render_row(ix, cx)),
+                )
+                .size_full(),
+            )
+        };
 
         div()
             .id("search-page")
@@ -838,6 +817,80 @@ impl ReaderView {
                     .child(self.render_search_filters(page, cx))
                     .child(body),
             )
+    }
+
+    /// One virtualized line: a heading, the topic chips, or a result.
+    fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(page) = self.search.as_ref() else {
+            return div().into_any_element();
+        };
+        let Some(row) = page.rows.get(ix).copied() else {
+            return div().into_any_element();
+        };
+        let theme = cx.theme().clone();
+        match row {
+            Row::KeyHeading => {
+                let mut col = div().flex().flex_col().gap_1().child(self.section_heading(
+                    &format!("Key passages on {}", page.topic.clone().unwrap_or_default()),
+                    cx,
+                ));
+                let others: Vec<String> = page
+                    .results
+                    .topics
+                    .iter()
+                    .map(|t| t.topic.name.clone())
+                    .filter(|n| Some(n) != page.topic.as_ref())
+                    .take(5)
+                    .collect();
+                if !others.is_empty() {
+                    let chips = others.into_iter().enumerate().map(|(n, name)| {
+                        let q = name.clone();
+                        Button::new(("sp-topic", n))
+                            .label(name)
+                            .xsmall()
+                            .outline()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.search_input.update(cx, |input, cx| {
+                                    input.set_value(q.clone(), window, cx);
+                                });
+                            }))
+                    });
+                    col = col.child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_1()
+                            .px_3()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child("Also:"),
+                            )
+                            .children(chips),
+                    );
+                }
+                col.into_any_element()
+            }
+            Row::Matches => {
+                let total = page.results.total;
+                let shown = page.results.hits.len();
+                let mut note = if total > shown {
+                    format!("Matches \u{b7} best {shown} of {total}")
+                } else {
+                    format!("Matches \u{b7} {total}")
+                };
+                if let Some(fixed) = &page.results.corrected {
+                    note = format!("Showing results for \u{201c}{fixed}\u{201d} \u{b7} {note}");
+                }
+                self.section_heading(&note, cx).into_any_element()
+            }
+            Row::Entry(n) => div()
+                .pb_1()
+                .child(self.render_entry(n, &page.entries[n], page, cx))
+                .into_any_element(),
+        }
     }
 
     fn section_heading(&self, text: &str, cx: &mut Context<Self>) -> impl IntoElement {

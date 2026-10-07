@@ -13,10 +13,10 @@ use gpui_kit::Action;
 
 use crate::library::{Appearance, FontPairing};
 use crate::{
-    ClosePane, CloseTab, CopyChapter, CopyVerse, DecreaseFont, FocusLeftPane, FocusRightPane,
-    IncreaseFont, NewTab, OpenSettings, OpenShortcuts, ReopenClosedTab, ResetFont,
-    SelectTranslation, SetAppearance, SetFontPairing, ToggleInspector, ToggleRedLetter,
-    ToggleSidebar, ToggleSplit, ToggleVerseNumbers,
+    ClosePane, CloseTab, CopyChapter, CopyVerse, DecreaseFont, DecreaseLineSpacing, FocusLeftPane,
+    FocusRightPane, IncreaseFont, IncreaseLineSpacing, NewTab, OpenSettings, OpenShortcuts,
+    ReopenClosedTab, ResetFont, ResetLineSpacing, SelectTranslation, SetAppearance, SetFontPairing,
+    ToggleInspector, ToggleRedLetter, ToggleSidebar, ToggleSplit, ToggleVerseNumbers,
 };
 
 /// Verses fetched for the palette; the search page asks for more.
@@ -484,6 +484,21 @@ fn commands(query: &str, cx: &Context) -> Vec<Row> {
             "Actual Size Text".into(),
             &["font", "size", "reset"],
             Box::new(ResetFont),
+        ),
+        (
+            "Looser Line Spacing".into(),
+            &["line", "height", "leading", "spacing"],
+            Box::new(IncreaseLineSpacing),
+        ),
+        (
+            "Tighter Line Spacing".into(),
+            &["line", "height", "leading", "spacing"],
+            Box::new(DecreaseLineSpacing),
+        ),
+        (
+            "Default Line Spacing".into(),
+            &["line", "height", "leading", "spacing", "reset"],
+            Box::new(ResetLineSpacing),
         ),
     ];
     all.extend(rest);

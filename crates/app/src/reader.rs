@@ -11,6 +11,7 @@ use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandSt
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_kit::component::tooltip::Tooltip;
@@ -23,7 +24,8 @@ use gpui_kit::*;
 
 use crate::chapter_view::{self, Options, Palette, note_marker, render_block};
 use crate::library::{
-    Appearance, FONT_SIZE_RANGE, FontPairing, Library, Settings, current_translation,
+    Appearance, FONT_SIZE_RANGE, FontPairing, LINE_HEIGHT_RANGE, Library, Settings,
+    current_translation,
 };
 use crate::palette::{
     self, ActivateTab, COMMAND_PREFIX, CloseTabAt, OpenPassage, PinTab, RenameTab, Row,
@@ -33,12 +35,13 @@ use crate::suggestions;
 use crate::tabs::{Location, Tab};
 use crate::translation_picker::TranslationItem;
 use crate::{
-    ClosePalette, ClosePane, CloseTab, CopyChapter, CopyVerse, DecreaseFont, FocusLeftPane,
-    FocusReader, FocusRightPane, FocusSidebar, GoBack, GoForward, IncreaseFont, NewTab,
-    NextChapter, NextTab, OpenCommands, OpenInNewTab, OpenInSplit, OpenPalette, PrevChapter,
-    PrevTab, ReopenClosedTab, ResetFont, SelectTranslation, SetAppearance, SetFontPairing,
-    SidebarDown, SidebarLeft, SidebarNextBook, SidebarOpen, SidebarPrevBook, SidebarRight,
-    SidebarUp, ToggleInspector, ToggleRedLetter, ToggleSidebar, ToggleSplit, ToggleVerseNumbers,
+    ClosePalette, ClosePane, CloseTab, CopyChapter, CopyVerse, DecreaseFont, DecreaseLineSpacing,
+    FocusLeftPane, FocusReader, FocusRightPane, FocusSidebar, GoBack, GoForward, IncreaseFont,
+    IncreaseLineSpacing, NewTab, NextChapter, NextTab, OpenCommands, OpenInNewTab, OpenInSplit,
+    OpenPalette, PrevChapter, PrevTab, ReopenClosedTab, ResetFont, ResetLineSpacing,
+    SelectTranslation, SetAppearance, SetFontPairing, SidebarDown, SidebarLeft, SidebarNextBook,
+    SidebarOpen, SidebarPrevBook, SidebarRight, SidebarUp, ToggleInspector, ToggleRedLetter,
+    ToggleSidebar, ToggleSplit, ToggleVerseNumbers,
 };
 
 #[path = "search_page.rs"]
@@ -976,7 +979,6 @@ impl ReaderView {
         let library = cx.global::<Library>();
         let settings = cx.global::<Settings>();
         let appearance = settings.appearance;
-        let font_pairing = settings.font_pairing;
         let sidebar_open = settings.sidebar_open;
         // Searchable once there are more than a handful of translations.
         let versions = Select::new(&self.translation_select)
@@ -1059,23 +1061,77 @@ impl ReaderView {
                 d.child(versions).child(div().w(px(6.)))
             })
             .child(
-                icon_button("text-size", IconName::ALargeSmall, "Text size").dropdown_menu(
-                    move |menu, _, _| {
-                        let mut menu = menu
-                            .menu("Larger  ⌘+", Box::new(IncreaseFont))
-                            .menu("Smaller  ⌘−", Box::new(DecreaseFont))
-                            .menu("Actual Size  ⌘0", Box::new(ResetFont))
-                            .separator();
+                Popover::new("text-size-popover")
+                    .anchor(Anchor::TopRight)
+                    .trigger(icon_button("text-size", IconName::ALargeSmall, "Text size"))
+                    .content(|_, _, cx| {
+                        // A popover (not a menu) so it stays open for repeated clicks.
+                        let current = cx.global::<Settings>().font_pairing;
+                        let theme = cx.theme().clone();
+                        let row =
+                            |id: &'static str, label: &'static str, action: Box<dyn Action>| {
+                                div()
+                                    .id(id)
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(theme.radius)
+                                    .cursor_pointer()
+                                    .text_sm()
+                                    .hover(|d| d.bg(theme.accent))
+                                    .child(label)
+                                    .on_click(move |_, window, cx| {
+                                        window.dispatch_action(action.boxed_clone(), cx)
+                                    })
+                            };
+                        let mut list = div()
+                            .flex()
+                            .flex_col()
+                            .min_w(px(240.))
+                            .child(row("font-up", "Larger  ⌘+", Box::new(IncreaseFont)))
+                            .child(row("font-down", "Smaller  ⌘−", Box::new(DecreaseFont)))
+                            .child(row("font-reset", "Actual Size  ⌘0", Box::new(ResetFont)))
+                            .child(div().h(px(1.)).my_1().bg(theme.border))
+                            .child(row(
+                                "ls-up",
+                                "Looser Line Spacing",
+                                Box::new(IncreaseLineSpacing),
+                            ))
+                            .child(row(
+                                "ls-down",
+                                "Tighter Line Spacing",
+                                Box::new(DecreaseLineSpacing),
+                            ))
+                            .child(row(
+                                "ls-reset",
+                                "Default Line Spacing",
+                                Box::new(ResetLineSpacing),
+                            ))
+                            .child(div().h(px(1.)).my_1().bg(theme.border));
                         for pairing in FontPairing::ALL {
-                            menu = menu.menu_with_check(
-                                pairing.description(),
-                                pairing == font_pairing,
-                                Box::new(SetFontPairing { pairing }),
+                            let action = SetFontPairing { pairing };
+                            list = list.child(
+                                div()
+                                    .id(pairing.description())
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(theme.radius)
+                                    .cursor_pointer()
+                                    .text_sm()
+                                    .hover(|d| d.bg(theme.accent))
+                                    .child(div().w(px(14.)).when(pairing == current, |d| {
+                                        d.child(Icon::new(IconName::Check).size_3())
+                                    }))
+                                    .child(pairing.description())
+                                    .on_click(move |_, window, cx| {
+                                        window.dispatch_action(action.boxed_clone(), cx)
+                                    }),
                             );
                         }
-                        menu
-                    },
-                ),
+                        list
+                    }),
             )
             .child(
                 icon_button(
@@ -2502,6 +2558,21 @@ impl Render for ReaderView {
             }))
             .on_action(cx.listener(|this, _: &ResetFont, _, cx| {
                 this.update_settings(cx, |s| s.font_size = Settings::default().font_size)
+            }))
+            .on_action(cx.listener(|this, _: &IncreaseLineSpacing, _, cx| {
+                this.update_settings(cx, |s| {
+                    s.line_height =
+                        ((s.line_height + 0.1).min(LINE_HEIGHT_RANGE.1) * 100.).round() / 100.
+                })
+            }))
+            .on_action(cx.listener(|this, _: &DecreaseLineSpacing, _, cx| {
+                this.update_settings(cx, |s| {
+                    s.line_height =
+                        ((s.line_height - 0.1).max(LINE_HEIGHT_RANGE.0) * 100.).round() / 100.
+                })
+            }))
+            .on_action(cx.listener(|this, _: &ResetLineSpacing, _, cx| {
+                this.update_settings(cx, |s| s.line_height = Settings::default().line_height)
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 this.update_settings(cx, |s| s.sidebar_open = !s.sidebar_open)
