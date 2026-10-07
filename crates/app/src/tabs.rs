@@ -42,6 +42,12 @@ pub struct Tab {
     back: Vec<Location>,
     forward: Vec<Location>,
     pub scroll: ScrollHandle,
+    /// Second pane when this tab is split side by side. It is itself a `Tab`
+    /// so it gets its own place, translation, history and scroll; only the
+    /// outer tab's `pinned` / `name` count.
+    pub side: Option<Box<Tab>>,
+    /// Navigation targets the right pane instead of the left one.
+    pub focus_side: bool,
 }
 
 impl Tab {
@@ -55,12 +61,78 @@ impl Tab {
             back: Vec::new(),
             forward: Vec::new(),
             scroll: ScrollHandle::new(),
+            side: None,
+            focus_side: false,
         }
     }
 
-    /// A new tab at the same place, with fresh history.
+    pub fn is_split(&self) -> bool {
+        self.side.is_some()
+    }
+
+    /// The pane navigation applies to.
+    pub fn focused(&self) -> &Tab {
+        match &self.side {
+            Some(side) if self.focus_side => side,
+            _ => self,
+        }
+    }
+
+    pub fn focused_mut(&mut self) -> &mut Tab {
+        if self.focus_side && self.side.is_some() {
+            self.side.as_deref_mut().expect("checked")
+        } else {
+            self
+        }
+    }
+
+    /// Swap the reading state (not pinned / name / split) of this tab's own
+    /// pane with its side pane's.
+    fn swap_panes(&mut self) {
+        if let Some(side) = self.side.as_mut() {
+            std::mem::swap(&mut self.id, &mut side.id);
+            std::mem::swap(&mut self.location, &mut side.location);
+            std::mem::swap(&mut self.translation, &mut side.translation);
+            std::mem::swap(&mut self.back, &mut side.back);
+            std::mem::swap(&mut self.forward, &mut side.forward);
+            std::mem::swap(&mut self.scroll, &mut side.scroll);
+        }
+    }
+
+    /// Show `other` beside this tab's pane: on the right, or on the left
+    /// when `right` is false. The new pane takes focus. Does nothing when
+    /// already split or when `other` is itself split.
+    pub fn split_with(&mut self, mut other: Tab, right: bool) -> bool {
+        if self.is_split() || other.is_split() {
+            return false;
+        }
+        other.pinned = false;
+        other.name = None;
+        self.side = Some(Box::new(other));
+        if !right {
+            self.swap_panes();
+        }
+        self.focus_side = right;
+        true
+    }
+
+    /// Remove one pane (the right one when `right`) and return it as a tab.
+    /// The other pane stays in this tab, which is no longer split.
+    pub fn take_pane(&mut self, right: bool) -> Option<Tab> {
+        self.side.as_ref()?;
+        if !right {
+            self.swap_panes();
+        }
+        let taken = self.side.take().map(|t| *t);
+        self.focus_side = false;
+        taken
+    }
+
+    /// A new tab at the same place, with fresh history. A split tab
+    /// duplicates its focused pane.
     pub fn duplicate(&self) -> Self {
-        Self::new(self.location, self.translation.clone())
+        let pane = self.focused();
+        Self::new(pane.location, pane.translation.clone())
     }
 
     /// Go somewhere new, recording the current place for Back. Returns false
@@ -108,10 +180,16 @@ impl Tab {
 
     /// What the tab shows: its custom name, or "John 3 · BSB".
     pub fn label(&self) -> String {
-        match &self.name {
-            Some(name) => name.clone(),
-            None => format!("{} · {}", self.title(), self.translation),
+        match (&self.name, &self.side) {
+            (Some(name), _) => name.clone(),
+            (None, Some(side)) => format!("{}  |  {}", self.pane_label(), side.pane_label()),
+            (None, None) => self.pane_label(),
         }
+    }
+
+    /// "John 3 · BSB"
+    pub fn pane_label(&self) -> String {
+        format!("{} · {}", self.title(), self.translation)
     }
 
     /// Set the custom name; blank clears it.
@@ -128,6 +206,8 @@ impl Tab {
             translation: self.translation.clone(),
             pinned: self.pinned,
             name: self.name.clone(),
+            side: self.side.as_ref().map(|s| Box::new(s.to_saved())),
+            side_focused: self.focus_side && self.side.is_some(),
         }
     }
 
@@ -147,6 +227,12 @@ impl Tab {
         let mut tab = Self::new(Location { chapter, verse }, saved.translation.clone());
         tab.pinned = saved.pinned;
         tab.name = saved.name.clone();
+        if let Some(side) = &saved.side {
+            let mut side = Self::from_saved(side);
+            side.side = None;
+            tab.side = Some(Box::new(side));
+            tab.focus_side = saved.side_focused;
+        }
         tab
     }
 }
@@ -223,7 +309,43 @@ mod tests {
             translation: "BSB".into(),
             pinned: false,
             name: None,
+            side: None,
+            side_focused: false,
         };
         assert_eq!(Tab::from_saved(&bogus).location, at(43, 1));
+    }
+
+    #[test]
+    fn split_keeps_each_pane_independent() {
+        let mut tab = Tab::new(at(43, 3), "BSB".into());
+        assert!(tab.split_with(Tab::new(at(45, 8), "KJV".into()), true));
+        assert!(tab.is_split());
+        assert_eq!(tab.label(), "John 3 · BSB  |  Romans 8 · KJV");
+        // The new pane has focus; navigating moves only it.
+        assert_eq!(tab.focused().translation, "KJV");
+        tab.focused_mut().navigate(at(45, 9));
+        assert_eq!(tab.location, at(43, 3));
+        assert_eq!(tab.side.as_ref().unwrap().location, at(45, 9));
+        // No nesting, no second split.
+        assert!(!tab.split_with(Tab::new(at(1, 1), "BSB".into()), true));
+
+        let restored = Tab::from_saved(&tab.to_saved());
+        assert_eq!(restored.label(), "John 3 · BSB  |  Romans 9 · KJV");
+        assert!(restored.focus_side);
+    }
+
+    #[test]
+    fn split_left_and_take_pane() {
+        let mut tab = Tab::new(at(43, 3), "BSB".into());
+        assert!(tab.split_with(Tab::new(at(45, 8), "KJV".into()), false));
+        // The dropped tab is now the left pane.
+        assert_eq!(tab.label(), "Romans 8 · KJV  |  John 3 · BSB");
+        assert!(!tab.focus_side || tab.focused().translation == "BSB");
+
+        // Taking the left pane leaves the right one behind.
+        let left = tab.take_pane(false).unwrap();
+        assert_eq!(left.label(), "Romans 8 · KJV");
+        assert_eq!(tab.label(), "John 3 · BSB");
+        assert!(!tab.is_split());
     }
 }

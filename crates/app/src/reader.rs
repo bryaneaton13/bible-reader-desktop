@@ -2,6 +2,7 @@
 //! chapter text, notes inspector and the ⌘K palette.
 
 use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
 
 use bible_core::{BOOKS, Block, BlockKind, ChapterRef, Note, NoteKind, Testament, VerseId};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -9,6 +10,7 @@ use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandSt
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
+use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
@@ -19,7 +21,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::chapter_view::{self, Options, Palette, note_marker, render_block};
-use crate::library::{Appearance, FONT_SIZE_RANGE, Library, Settings, current_translation};
+use crate::library::{
+    Appearance, FONT_SIZE_RANGE, FontPairing, Library, Settings, current_translation,
+};
 use crate::palette::{
     self, ActivateTab, COMMAND_PREFIX, CloseTabAt, OpenPassage, PinTab, RenameTab, Row,
     SEARCH_LIMIT, SearchIn,
@@ -27,11 +31,12 @@ use crate::palette::{
 use crate::tabs::{Location, Tab};
 use crate::translation_picker::TranslationItem;
 use crate::{
-    ClosePalette, CloseTab, CopyChapter, CopyVerse, DecreaseFont, FocusReader, FocusSidebar,
-    GoBack, GoForward, IncreaseFont, NewTab, NextChapter, NextTab, OpenCommands, OpenInNewTab,
-    OpenPalette, PrevChapter, PrevTab, ReopenClosedTab, ResetFont, SelectTranslation,
-    SetAppearance, SidebarDown, SidebarLeft, SidebarNextBook, SidebarOpen, SidebarPrevBook,
-    SidebarRight, SidebarUp, ToggleInspector, ToggleRedLetter, ToggleSidebar, ToggleVerseNumbers,
+    ClosePalette, ClosePane, CloseTab, CopyChapter, CopyVerse, DecreaseFont, FocusLeftPane,
+    FocusReader, FocusRightPane, FocusSidebar, GoBack, GoForward, IncreaseFont, NewTab,
+    NextChapter, NextTab, OpenCommands, OpenInNewTab, OpenInSplit, OpenPalette, PrevChapter,
+    PrevTab, ReopenClosedTab, ResetFont, SelectTranslation, SetAppearance, SetFontPairing,
+    SidebarDown, SidebarLeft, SidebarNextBook, SidebarOpen, SidebarPrevBook, SidebarRight,
+    SidebarUp, ToggleInspector, ToggleRedLetter, ToggleSidebar, ToggleSplit, ToggleVerseNumbers,
 };
 
 /// Verse (or whole chapter) text with a citation and, for translations that
@@ -79,6 +84,56 @@ struct DraggedTab {
     from: usize,
 }
 
+/// Payload while a pane header is being dragged out to the tab strip.
+#[derive(Clone)]
+struct DraggedPane {
+    right: bool,
+}
+
+/// Narrowest content area (sidebar and notes excluded) that still shows two
+/// panes side by side; below it only the focused pane is shown.
+const SPLIT_MIN_WIDTH: f32 = 760.;
+
+/// Chapter text and footnotes for one pane.
+#[derive(Default)]
+struct Content {
+    blocks: Vec<Block>,
+    notes: Vec<Note>,
+}
+
+fn load_content(cx: &App, abbrev: &str, chapter: ChapterRef) -> Content {
+    let library = cx.global::<Library>();
+    let translation = &library.translations[library.index_of(abbrev).unwrap_or(0)];
+    Content {
+        blocks: translation
+            .chapter(chapter)
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+        notes: translation.notes_for_chapter(chapter).unwrap_or_default(),
+    }
+}
+
+/// Index of the block holding `verse`, for scrolling to it.
+fn block_of_verse(blocks: &[Block], verse: VerseId) -> usize {
+    blocks
+        .iter()
+        .position(|b| {
+            b.spans.iter().any(|s| matches!(s, bible_core::Span::Verse { num, end }
+                if *num == verse.verse() || end.is_some_and(|e| *num <= verse.verse() && verse.verse() <= e)))
+        })
+        .unwrap_or(0)
+}
+
+/// Suffix that keeps element ids of the right pane apart from the left's.
+fn pane_id(base: &'static str, right: bool) -> SharedString {
+    if right {
+        format!("{base}-right").into()
+    } else {
+        base.into()
+    }
+}
+
 /// The floating label that follows the pointer during a tab drag.
 struct TabGhost {
     label: String,
@@ -111,9 +166,8 @@ pub struct ReaderView {
     active: usize,
     /// Recently closed tabs for ⇧⌘T, newest last.
     closed: Vec<Tab>,
-    /// Content of the active tab's chapter.
-    blocks: Vec<Block>,
-    notes: Vec<Note>,
+    /// Chapter text per pane, by pane (tab) id.
+    content: HashMap<u64, Content>,
     selected_note: Option<u32>,
     inspector_open: bool,
     expanded_book: Option<u8>,
@@ -134,6 +188,14 @@ pub struct ReaderView {
     palette: Entity<CommandState>,
     palette_groups: Vec<palette::Group>,
     translation_select: Entity<TranslationSelect>,
+    /// Translation dropdown in the right pane's header.
+    side_select: Entity<TranslationSelect>,
+    split_state: Entity<ResizableState>,
+    /// While a tab is dragged over the panes: which half it would land in
+    /// (`true` = right). `None` when it can't be dropped there.
+    drop_zone: Option<bool>,
+    /// Show one pane at a time even when the window is wide.
+    force_collapsed: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -153,19 +215,41 @@ impl ReaderView {
                 tab.translation = library.translations[0].info.abbrev.clone();
             }
         }
+        for tab in &mut tabs {
+            if let Some(side) = tab.side.as_mut()
+                && library.index_of(&side.translation).is_none()
+            {
+                side.translation = library.translations[0].info.abbrev.clone();
+            }
+        }
         let active = settings.active_tab.min(tabs.len() - 1);
 
-        let items: Vec<TranslationItem> = library
-            .translations
-            .iter()
-            .map(TranslationItem::from_translation)
-            .collect();
-        let selected = library
-            .index_of(&tabs[active].translation)
-            .map(|ix| IndexPath::default().row(ix));
+        let make_items = || -> Vec<TranslationItem> {
+            library
+                .translations
+                .iter()
+                .map(TranslationItem::from_translation)
+                .collect()
+        };
+        let selected_in = |abbrev: &str| {
+            library
+                .index_of(abbrev)
+                .map(|ix| IndexPath::default().row(ix))
+        };
+        let selected = selected_in(&tabs[active].translation);
+        let side_selected = tabs[active]
+            .side
+            .as_ref()
+            .and_then(|s| selected_in(&s.translation));
+        let (items, side_items) = (make_items(), make_items());
         let translation_select = cx.new(|cx| {
             SelectState::new(SearchableVec::new(items), selected, window, cx).searchable(true)
         });
+        let items = side_items;
+        let side_select = cx.new(|cx| {
+            SelectState::new(SearchableVec::new(items), side_selected, window, cx).searchable(true)
+        });
+        let split_state = cx.new(|_| ResizableState::default());
         let palette = cx.new(|cx| CommandState::new(window, cx));
         let rename_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Tab name (blank shows the passage)")
@@ -173,6 +257,7 @@ impl ReaderView {
 
         let subscriptions = vec![
             cx.subscribe_in(&translation_select, window, Self::on_translation_selected),
+            cx.subscribe_in(&side_select, window, Self::on_side_translation_selected),
             cx.subscribe_in(&rename_input, window, Self::on_rename_input),
             // Settings window changes and menu actions repaint the reader.
             cx.observe_global::<Settings>(|_, cx| cx.notify()),
@@ -187,10 +272,10 @@ impl ReaderView {
 
         let mut this = Self {
             focus,
-            expanded_book: Some(tabs[active].location.chapter.book),
+            expanded_book: Some(tabs[active].focused().location.chapter.book),
             sidebar_scroll: ScrollHandle::new(),
             sidebar_focus: cx.focus_handle(),
-            sidebar_cursor: tabs[active].location.chapter,
+            sidebar_cursor: tabs[active].focused().location.chapter,
             sidebar_book: None,
             scroll_sidebar: Cell::new(None),
             palette_handed_off: false,
@@ -199,22 +284,30 @@ impl ReaderView {
             tabs,
             active,
             closed: Vec::new(),
-            blocks: Vec::new(),
-            notes: Vec::new(),
+            content: HashMap::new(),
             selected_note: None,
             inspector_open: false,
             palette_open: false,
             palette,
             palette_groups: Vec::new(),
             translation_select,
+            side_select,
+            split_state,
+            drop_zone: None,
+            force_collapsed: false,
             _subscriptions: subscriptions,
         };
         this.show_active(cx);
         this
     }
 
+    /// The pane navigation applies to (the only pane unless the tab is split).
     pub fn tab(&self) -> &Tab {
-        &self.tabs[self.active]
+        self.tabs[self.active].focused()
+    }
+
+    fn tab_mut(&mut self) -> &mut Tab {
+        self.tabs[self.active].focused_mut()
     }
 
     pub fn chapter(&self) -> ChapterRef {
@@ -225,42 +318,68 @@ impl ReaderView {
         self.tab().location.verse
     }
 
-    /// Load the active tab's chapter, scroll to its verse, and persist.
-    fn show_active(&mut self, cx: &mut Context<Self>) {
+    /// One pane of the active tab: the left (`false`) or right (`true`).
+    fn pane(&self, right: bool) -> Option<&Tab> {
         let tab = &self.tabs[self.active];
-        let (location, abbrev) = (tab.location, tab.translation.clone());
-        self.expanded_book = Some(location.chapter.book);
-        self.sidebar_cursor = location.chapter;
-        if self.sidebar_book != Some(location.chapter.book) {
-            self.sidebar_book = Some(location.chapter.book);
-            self.scroll_sidebar.set(Some((location.chapter.book, None)));
+        if right {
+            tab.side.as_deref()
+        } else {
+            Some(tab)
         }
+    }
 
-        cx.update_global::<Settings, _>(|s, _| s.translation = abbrev.clone());
-        let translation = current_translation(cx);
-        self.blocks = translation
-            .chapter(location.chapter)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        self.notes = translation
-            .notes_for_chapter(location.chapter)
-            .unwrap_or_default();
-        self.selected_note = None;
+    fn focused_content(&self) -> Option<&Content> {
+        self.content.get(&self.tab().id)
+    }
 
+    /// Load the focused pane's chapter, scroll to its verse, make sure the
+    /// other pane has text too, and persist.
+    fn show_active(&mut self, cx: &mut Context<Self>) {
+        let focused = self.tab();
+        let (id, location, abbrev) = (focused.id, focused.location, focused.translation.clone());
+        let scroll = focused.scroll.clone();
+        let content = load_content(cx, &abbrev, location.chapter);
         if let Some(v) = location.verse {
-            let ix = self
-                .blocks
-                .iter()
-                .position(|b| {
-                    b.spans.iter().any(|s| matches!(s, bible_core::Span::Verse { num, end }
-                        if *num == v.verse() || end.is_some_and(|e| *num <= v.verse() && v.verse() <= e)))
-                })
-                .unwrap_or(0);
             // Child 0 of the scroll container is the chapter title.
-            self.tabs[self.active].scroll.scroll_to_top_of_item(ix + 1);
+            scroll.scroll_to_top_of_item(block_of_verse(&content.blocks, v) + 1);
         }
+        self.content.insert(id, content);
 
+        let tab = &self.tabs[self.active];
+        let others: Vec<(u64, String, ChapterRef)> = [Some(tab), tab.side.as_deref()]
+            .into_iter()
+            .flatten()
+            .filter(|p| p.id != id && !self.content.contains_key(&p.id))
+            .map(|p| (p.id, p.translation.clone(), p.location.chapter))
+            .collect();
+        for (pane_id, abbrev, chapter) in others {
+            self.content
+                .insert(pane_id, load_content(cx, &abbrev, chapter));
+        }
+        let live: HashSet<u64> = self
+            .tabs
+            .iter()
+            .flat_map(|t| [Some(t.id), t.side.as_ref().map(|s| s.id)])
+            .flatten()
+            .collect();
+        self.content.retain(|id, _| live.contains(id));
+
+        self.selected_note = None;
+        self.sync_focus(cx);
+    }
+
+    /// Point everything that follows "the current pane" (sidebar, menu bar,
+    /// saved state) at the focused pane.
+    fn sync_focus(&mut self, cx: &mut Context<Self>) {
+        let focused = self.tab();
+        let (chapter, abbrev) = (focused.location.chapter, focused.translation.clone());
+        self.expanded_book = Some(chapter.book);
+        self.sidebar_cursor = chapter;
+        if self.sidebar_book != Some(chapter.book) {
+            self.sidebar_book = Some(chapter.book);
+            self.scroll_sidebar.set(Some((chapter.book, None)));
+        }
+        cx.update_global::<Settings, _>(|s, _| s.translation = abbrev);
         self.save_tabs(cx);
         cx.notify();
     }
@@ -282,7 +401,7 @@ impl ReaderView {
 
     /// Navigate the active tab, recording the current place for Back.
     pub fn go_to(&mut self, chapter: ChapterRef, verse: Option<VerseId>, cx: &mut Context<Self>) {
-        self.tabs[self.active].navigate(Location { chapter, verse });
+        self.tab_mut().navigate(Location { chapter, verse });
         self.show_active(cx);
         self.scroll_to_top_if_no_verse(verse);
     }
@@ -297,31 +416,39 @@ impl ReaderView {
     /// Point the translation dropdown at the active tab's translation. Runs
     /// at render time because changing a `Select` needs the `Window`.
     fn sync_translation_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let abbrev = &self.tab().translation;
-        if self.translation_select.read(cx).selected_value() == Some(abbrev) {
-            return;
-        }
-        if let Some(ix) = cx.global::<Library>().index_of(abbrev) {
-            self.translation_select.update(cx, |select, cx| {
-                select.set_selected_index(Some(IndexPath::default().row(ix)), window, cx)
-            });
+        let tab = &self.tabs[self.active];
+        let left = tab.translation.clone();
+        let right = tab.side.as_ref().map(|s| s.translation.clone());
+        for (select, abbrev) in [
+            (self.translation_select.clone(), Some(left)),
+            (self.side_select.clone(), right),
+        ] {
+            let Some(abbrev) = abbrev else { continue };
+            if select.read(cx).selected_value() == Some(&abbrev) {
+                continue;
+            }
+            if let Some(ix) = cx.global::<Library>().index_of(&abbrev) {
+                select.update(cx, |select, cx| {
+                    select.set_selected_index(Some(IndexPath::default().row(ix)), window, cx)
+                });
+            }
         }
     }
 
     fn go_back(&mut self, _: &GoBack, _: &mut Window, cx: &mut Context<Self>) {
-        if self.tabs[self.active].go_back().is_some() {
+        if self.tab_mut().go_back().is_some() {
             self.show_active(cx);
         }
     }
 
     fn go_forward(&mut self, _: &GoForward, _: &mut Window, cx: &mut Context<Self>) {
-        if self.tabs[self.active].go_forward().is_some() {
+        if self.tab_mut().go_forward().is_some() {
             self.show_active(cx);
         }
     }
 
     fn open_passage(&mut self, action: &OpenPassage, _: &mut Window, cx: &mut Context<Self>) {
-        self.tabs[self.active].navigate(Location {
+        self.tab_mut().navigate(Location {
             chapter: action.chapter,
             verse: action.verse,
         });
@@ -514,6 +641,126 @@ impl ReaderView {
         tab.label()
     }
 
+    // MARK: Split panes
+
+    /// Focus the left or right pane of a split tab (a click, ⌘⌥← / ⌘⌥→).
+    fn focus_pane(&mut self, right: bool, cx: &mut Context<Self>) {
+        let tab = &mut self.tabs[self.active];
+        if !tab.is_split() || tab.focus_side == right {
+            return;
+        }
+        tab.focus_side = right;
+        self.selected_note = None;
+        self.sync_focus(cx);
+    }
+
+    fn focus_left_pane(&mut self, _: &FocusLeftPane, _: &mut Window, cx: &mut Context<Self>) {
+        self.focus_pane(false, cx);
+    }
+
+    fn focus_right_pane(&mut self, _: &FocusRightPane, _: &mut Window, cx: &mut Context<Self>) {
+        self.focus_pane(true, cx);
+    }
+
+    /// ⌘\: show the focused passage a second time beside itself, or, when
+    /// already split, turn the right pane into its own tab.
+    fn toggle_split(&mut self, _: &ToggleSplit, _: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs[self.active].is_split() {
+            self.pane_to_tab(true, false, cx);
+        } else {
+            let copy = self.tab().duplicate();
+            self.tabs[self.active].split_with(copy, true);
+            self.show_active(cx);
+        }
+    }
+
+    /// Move a pane out into a tab of its own, right after the active one.
+    fn pane_to_tab(&mut self, right: bool, activate: bool, cx: &mut Context<Self>) {
+        let Some(pane) = self.tabs[self.active].take_pane(right) else {
+            return;
+        };
+        let keep = self.tabs[self.active].id;
+        self.insert_tab_after_active(pane);
+        if !activate {
+            self.active = self.tabs.iter().position(|t| t.id == keep).unwrap_or(0);
+        }
+        self.show_active(cx);
+    }
+
+    fn close_pane(&mut self, _: &ClosePane, _: &mut Window, cx: &mut Context<Self>) {
+        let right = self.tabs[self.active].focus_side;
+        self.close_pane_at(right, cx);
+    }
+
+    /// Close one pane of a split tab; it can be reopened with ⇧⌘T.
+    fn close_pane_at(&mut self, right: bool, cx: &mut Context<Self>) {
+        if let Some(pane) = self.tabs[self.active].take_pane(right) {
+            self.closed.push(pane);
+            if self.closed.len() > CLOSED_TABS_KEPT {
+                self.closed.remove(0);
+            }
+            self.show_active(cx);
+        }
+    }
+
+    /// Whether the dragged tab can be dropped beside the active one.
+    fn can_split_with(&self, from: usize) -> bool {
+        from != self.active
+            && from < self.tabs.len()
+            && !self.tabs[self.active].is_split()
+            && !self.tabs[from].is_split()
+    }
+
+    /// Dragging a tab onto the left or right half of the text.
+    fn drop_tab_on_panes(&mut self, from: usize, right: bool, cx: &mut Context<Self>) {
+        self.drop_zone = None;
+        if !self.can_split_with(from) {
+            cx.notify();
+            return;
+        }
+        let keep = self.tabs[self.active].id;
+        let tab = self.tabs.remove(from);
+        self.active = self.tabs.iter().position(|t| t.id == keep).unwrap_or(0);
+        self.tabs[self.active].split_with(tab, right);
+        self.show_active(cx);
+    }
+
+    /// ⌥Enter in the palette: open the passage in the other pane, splitting
+    /// first when the tab is single.
+    fn open_passage_in_split(
+        &mut self,
+        chapter: ChapterRef,
+        verse: Option<VerseId>,
+        cx: &mut Context<Self>,
+    ) {
+        let tab = &mut self.tabs[self.active];
+        if tab.is_split() {
+            tab.focus_side = !tab.focus_side;
+        } else {
+            let copy = tab.duplicate();
+            tab.split_with(copy, true);
+        }
+        self.tab_mut().navigate(Location { chapter, verse });
+        self.show_active(cx);
+    }
+
+    fn open_in_split(&mut self, _: &OpenInSplit, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.palette.read(cx).selected_index();
+        let row = selected.and_then(|ix| self.palette_groups.get(ix.section)?.rows.get(ix.row));
+        if let Some(row) = row {
+            match row.passage() {
+                Some((chapter, verse)) => self.open_passage_in_split(chapter, verse, cx),
+                None => window.dispatch_action(row.action(), cx),
+            }
+        }
+        self.close_palette(&ClosePalette, window, cx);
+    }
+
+    /// Fewer than two panes' worth of room: show just the focused one.
+    fn collapsed(&self, available: f32) -> bool {
+        self.force_collapsed || available < SPLIT_MIN_WIDTH
+    }
+
     // MARK: Translation
 
     fn select_translation(
@@ -541,14 +788,29 @@ impl ReaderView {
         cx: &mut Context<Self>,
     ) {
         if let SelectEvent::Confirm(Some(abbrev)) = event {
+            self.focus_pane(false, cx);
             self.set_translation(abbrev.clone(), cx);
         }
         self.focus.focus(window, cx);
     }
 
-    /// Switch the active tab's translation.
+    fn on_side_translation_selected(
+        &mut self,
+        _: &Entity<TranslationSelect>,
+        event: &SelectEvent<SearchableVec<TranslationItem>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let SelectEvent::Confirm(Some(abbrev)) = event {
+            self.focus_pane(true, cx);
+            self.set_translation(abbrev.clone(), cx);
+        }
+        self.focus.focus(window, cx);
+    }
+
+    /// Switch the focused pane's translation.
     fn set_translation(&mut self, abbrev: String, cx: &mut Context<Self>) {
-        self.tabs[self.active].translation = abbrev;
+        self.tab_mut().translation = abbrev;
         self.show_active(cx);
         self.refresh_palette(cx);
     }
@@ -638,6 +900,7 @@ impl ReaderView {
             current: self.chapter(),
             active_tab: self.active,
             tabs: self.tabs.iter().map(|t| self.tab_title(t)).collect(),
+            split: self.tabs[self.active].is_split(),
             recent: &settings.recent,
             translations: library
                 .translations
@@ -646,7 +909,8 @@ impl ReaderView {
                 .collect(),
             translation: &translation.info.abbrev,
             appearance: settings.appearance,
-            active_pinned: self.tab().pinned,
+            font_pairing: settings.font_pairing,
+            active_pinned: self.tabs[self.active].pinned,
             search: &search,
         };
         self.palette_groups = palette::build(&query, &context);
@@ -658,6 +922,7 @@ impl ReaderView {
         let library = cx.global::<Library>();
         let settings = cx.global::<Settings>();
         let appearance = settings.appearance;
+        let font_pairing = settings.font_pairing;
         let sidebar_open = settings.sidebar_open;
         // Searchable once there are more than a handful of translations.
         let versions = Select::new(&self.translation_select)
@@ -736,14 +1001,25 @@ impl ReaderView {
             .flex()
             .items_center()
             .gap_1()
-            .child(versions)
-            .child(div().w(px(6.)))
+            .when(!self.tabs[self.active].is_split(), |d| {
+                d.child(versions).child(div().w(px(6.)))
+            })
             .child(
                 icon_button("text-size", IconName::ALargeSmall, "Text size").dropdown_menu(
-                    |menu, _, _| {
-                        menu.menu("Larger  ⌘+", Box::new(IncreaseFont))
+                    move |menu, _, _| {
+                        let mut menu = menu
+                            .menu("Larger  ⌘+", Box::new(IncreaseFont))
                             .menu("Smaller  ⌘−", Box::new(DecreaseFont))
                             .menu("Actual Size  ⌘0", Box::new(ResetFont))
+                            .separator();
+                        for pairing in FontPairing::ALL {
+                            menu = menu.menu_with_check(
+                                pairing.description(),
+                                pairing == font_pairing,
+                                Box::new(SetFontPairing { pairing }),
+                            );
+                        }
+                        menu
                     },
                 ),
             )
@@ -1011,18 +1287,22 @@ impl ReaderView {
             .child(list)
     }
 
-    fn render_chapter(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// One pane's chapter text. `available` is the width it can use.
+    fn render_pane(&self, right: bool, available: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let settings = cx.global::<Settings>();
         let dark = theme.mode.is_dark();
         let font_size = settings.font_size;
         let line_height = settings.line_height;
+        let pane = self.pane(right).expect("pane exists");
+        let no_content = Content::default();
+        let content = self.content.get(&pane.id).unwrap_or(&no_content);
+        let pane_chapter = pane.location.chapter;
+        let scroll = pane.scroll.clone();
+        // Block ids and selection order stay apart between panes.
+        let order_base = if right { 1_000_000 } else { 0 };
         // The column scales with font size (so bigger text keeps its characters
         // per line) and widens at breakpoints when the window has room.
-        let viewport = f32::from(window.viewport_size().width);
-        let available = viewport
-            - if settings.sidebar_open { 230. } else { 0. }
-            - if self.inspector_open { 280. } else { 0. };
         let breakpoint = match available {
             a if a >= 1500. => 1.5,
             a if a >= 1100. => 1.25,
@@ -1030,7 +1310,9 @@ impl ReaderView {
         };
         let wanted = settings.reading_width * (settings.font_size / 19.).max(1.) * breakpoint;
         let reading_width = px(wanted.min(available.max(320.)));
-        let reading_font = SharedString::from(settings.reading_font.clone());
+        let reading_font = SharedString::from(settings.font_pairing.body());
+        let display_font = SharedString::from(settings.font_pairing.display());
+        let number_font = SharedString::from(settings.font_pairing.numbers());
         let palette = Palette {
             verse_number: theme.muted_foreground,
             jesus: if dark {
@@ -1048,12 +1330,12 @@ impl ReaderView {
         let options = Options {
             red_letter: settings.red_letter,
             show_verse_numbers: settings.show_verse_numbers,
-            italic_added: settings.translation == "KJV",
-            target: self.target(),
+            italic_added: pane.translation == "KJV",
+            target: pane.location.verse,
         };
-        let book = self.chapter().book;
-        let chapter = self.chapter().chapter;
-        let note_ids: Vec<u32> = self.notes.iter().map(|n| n.id).collect();
+        let book = pane_chapter.book;
+        let chapter = pane_chapter.chapter;
+        let note_ids: Vec<u32> = content.notes.iter().map(|n| n.id).collect();
         // Body text uses explicit runs, so it can't inherit from the parent div.
         let body_style = TextStyle {
             font_family: reading_font.clone(),
@@ -1065,8 +1347,8 @@ impl ReaderView {
         let note_index = |id: u32| note_ids.iter().position(|n| *n == id).unwrap_or(0);
 
         let mut column = div()
-            .id("chapter-scroll")
-            .track_scroll(&self.tab().scroll)
+            .id(pane_id("chapter-scroll", right))
+            .track_scroll(&scroll)
             .overflow_y_scroll()
             .size_full()
             .flex()
@@ -1090,8 +1372,8 @@ impl ReaderView {
                         .justify_between()
                         .items_center()
                         .pb_4()
-                        .child(match self.chapter().prev() {
-                            Some(prev) => Button::new("top-prev")
+                        .child(match pane_chapter.prev() {
+                            Some(prev) => Button::new(pane_id("top-prev", right))
                                 .label(format!("‹ {prev}"))
                                 .ghost()
                                 .small()
@@ -1101,8 +1383,8 @@ impl ReaderView {
                                 .into_any_element(),
                             None => div().into_any_element(),
                         })
-                        .child(match self.chapter().next() {
-                            Some(next) => Button::new("top-next")
+                        .child(match pane_chapter.next() {
+                            Some(next) => Button::new(pane_id("top-next", right))
                                 .label(format!("{next} ›"))
                                 .ghost()
                                 .small()
@@ -1115,11 +1397,13 @@ impl ReaderView {
                 )
                 .child(
                     div()
+                        .font_family(display_font.clone())
                         .text_sm()
-                        .child(self.chapter().book_info().name.to_uppercase()),
+                        .child(pane_chapter.book_info().name.to_uppercase()),
                 )
                 .child(
                     div()
+                        .font_family(display_font.clone())
                         .text_size(px(font_size * 2.4))
                         .text_color(theme.foreground)
                         .child(chapter.to_string()),
@@ -1129,7 +1413,7 @@ impl ReaderView {
         // Verse still running at the start of each block (poetry lines,
         // paragraph breaks mid-verse), so the jump target is highlighted whole.
         let mut verse_in_progress = None;
-        for (ix, block) in self.blocks.iter().enumerate() {
+        for (ix, block) in content.blocks.iter().enumerate() {
             let rendered = render_block(
                 block,
                 verse_in_progress,
@@ -1148,7 +1432,7 @@ impl ReaderView {
                 .notes
                 .iter()
                 .filter_map(|(range, id)| {
-                    let note = self.notes.iter().find(|n| n.id == *id)?;
+                    let note = content.notes.iter().find(|n| n.id == *id)?;
                     let label = match note.kind {
                         NoteKind::Footnote => "",
                         NoteKind::CrossReference => "Cross-ref · ",
@@ -1166,7 +1450,7 @@ impl ReaderView {
                     block_style.font_style = FontStyle::Italic;
                     block_style.color = theme.muted_foreground;
                 }
-                let runs = chapter_view::build_runs(&rendered, &block_style);
+                let runs = chapter_view::build_runs(&rendered, &block_style, Some(&number_font));
                 StyledText::new(rendered.text.clone()).with_runs(runs)
             };
             let text_layout = styled.layout().clone();
@@ -1194,7 +1478,7 @@ impl ReaderView {
                 });
             let text = crate::selectable::SelectableBlock::new(
                 ("select", ix),
-                ix as u64,
+                order_base + ix as u64,
                 plain.into(),
                 text_layout,
                 text,
@@ -1206,7 +1490,7 @@ impl ReaderView {
                     .pt_6()
                     .pb_2()
                     .text_center()
-                    .font_family(".SystemUIFont")
+                    .font_family(display_font.clone())
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.muted_foreground)
@@ -1218,7 +1502,7 @@ impl ReaderView {
                         font_size * 0.8
                     }))
                     .pb_1()
-                    .font_family(".SystemUIFont")
+                    .font_family(display_font.clone())
                     .text_size(px(font_size * if *level == 1 { 0.85 } else { 0.78 }))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(text),
@@ -1236,7 +1520,7 @@ impl ReaderView {
                     .child(text),
                 BlockKind::Label => base
                     .pt_3()
-                    .font_family(".SystemUIFont")
+                    .font_family(display_font.clone())
                     .text_size(px(font_size * 0.7))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.muted_foreground)
@@ -1251,7 +1535,7 @@ impl ReaderView {
                 }
                 BlockKind::Centered => base.text_center().pb(px(font_size * 0.6)).child(text),
                 BlockKind::Paragraph | BlockKind::Continuation => {
-                    let next_is_poetry = self
+                    let next_is_poetry = content
                         .blocks
                         .get(ix + 1)
                         .is_some_and(|b| chapter_view::block_is_poetry(&b.kind));
@@ -1262,7 +1546,7 @@ impl ReaderView {
             column = column.child(el);
         }
 
-        let next = self.chapter().next();
+        let next = pane_chapter.next();
         column = column.child(
             div()
                 .w_full()
@@ -1274,9 +1558,9 @@ impl ReaderView {
                 .justify_between()
                 .font_family(".SystemUIFont")
                 .child(
-                    Button::new("bottom-prev")
+                    Button::new(pane_id("bottom-prev", right))
                         .label(
-                            self.chapter()
+                            pane_chapter
                                 .prev()
                                 .map(|c| format!("‹ {c}"))
                                 .unwrap_or_default(),
@@ -1287,7 +1571,7 @@ impl ReaderView {
                         })),
                 )
                 .child(
-                    Button::new("bottom-next")
+                    Button::new(pane_id("bottom-next", right))
                         .label(next.map(|c| format!("{c} ›")).unwrap_or_default())
                         .ghost()
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -1298,8 +1582,8 @@ impl ReaderView {
 
         div()
             .flex_1()
-            .h_full()
             .min_w_0()
+            .min_h_0()
             .font_family(reading_font)
             .text_size(px(font_size))
             .line_height(relative(line_height))
@@ -1307,9 +1591,236 @@ impl ReaderView {
             .child(column)
     }
 
+    /// Header above a pane of a split tab: translation, passage, close.
+    fn render_pane_header(&self, right: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let tab = &self.tabs[self.active];
+        let pane = self.pane(right).expect("pane exists");
+        let focused = tab.focus_side == right;
+        let select = if right {
+            &self.side_select
+        } else {
+            &self.translation_select
+        };
+        let versions = Select::new(select)
+            .id(pane_id("translation", right))
+            .small()
+            .w(px(96.))
+            .menu_width(px(300.))
+            .search_placeholder("Search translations…")
+            .accessibility_label("Translation");
+        let label = pane.title();
+        let ghost = pane.pane_label();
+        div()
+            .id(pane_id("pane-header", right))
+            .flex()
+            .items_center()
+            .gap_2()
+            .flex_shrink_0()
+            .h(px(32.))
+            .pl_2()
+            .pr_1()
+            .border_b_1()
+            .border_color(theme.border)
+            .relative()
+            .bg(if focused {
+                theme.background
+            } else {
+                theme.sidebar
+            })
+            // Accent line marks the pane that navigation applies to.
+            .when(focused, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(2.))
+                        .bg(theme.primary),
+                )
+            })
+            .child(div().flex_shrink_0().w(px(96.)).child(versions))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .when(!focused, |d| d.text_color(theme.muted_foreground))
+                    .child(label),
+            )
+            .child(
+                Button::new(pane_id("close-pane", right))
+                    .icon(IconName::Close)
+                    .ghost()
+                    .xsmall()
+                    .tooltip("Close pane (⇧⌘\\)")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.close_pane_at(right, cx)
+                    })),
+            )
+            .on_drag(DraggedPane { right }, move |_, _, _, cx| {
+                cx.new(|_| TabGhost {
+                    label: ghost.clone(),
+                })
+            })
+    }
+
+    /// A pane with its header (when split). Pressing anywhere in it, text
+    /// selection included, gives it focus.
+    fn render_pane_frame(
+        &self,
+        right: bool,
+        available: f32,
+        header: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .capture_any_mouse_down(cx.listener(move |this, _, _, cx| this.focus_pane(right, cx)))
+            .when(header, |d| d.child(self.render_pane_header(right, cx)))
+            .child(self.render_pane(right, available, cx))
+    }
+
+    /// Everything right of the sidebar and left of the notes: one pane, or
+    /// two side by side (one at a time in a narrow window).
+    fn render_panes(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let settings = cx.global::<Settings>();
+        let viewport = f32::from(window.viewport_size().width);
+        let available = viewport
+            - if settings.sidebar_open { 230. } else { 0. }
+            - if self.inspector_open { 280. } else { 0. };
+        let theme = cx.theme();
+        let (border, accent, primary, popover) =
+            (theme.border, theme.accent, theme.primary, theme.popover);
+        let split = self.tabs[self.active].is_split();
+        let collapsed = split && self.collapsed(available);
+
+        let body = if !split {
+            self.render_pane_frame(false, available, false, cx)
+                .into_any_element()
+        } else if collapsed {
+            let tab = &self.tabs[self.active];
+            let mut switcher = div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap_1()
+                .p_1()
+                .border_b_1()
+                .border_color(border);
+            for right in [false, true] {
+                let pane = self.pane(right).expect("split has both panes");
+                let selected = tab.focus_side == right;
+                switcher = switcher.child(
+                    Button::new(pane_id("pane-switch", right))
+                        .label(pane.pane_label())
+                        .small()
+                        .ghost()
+                        .selected(selected)
+                        .on_click(cx.listener(move |this, _, _, cx| this.focus_pane(right, cx))),
+                );
+            }
+            let right = tab.focus_side;
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(switcher)
+                .child(self.render_pane_frame(right, available, true, cx))
+                .into_any_element()
+        } else {
+            let half = available / 2.;
+            let panel = |right: bool, cx: &mut Context<Self>| {
+                resizable_panel()
+                    .size_range(px(280.)..gpui_kit::Pixels::MAX)
+                    .child(
+                        div()
+                            .size_full()
+                            .flex()
+                            .child(self.render_pane_frame(right, half, true, cx)),
+                    )
+            };
+            h_resizable("split-panes")
+                .with_state(&self.split_state)
+                .child(panel(false, cx))
+                .child(panel(true, cx))
+                .into_any_element()
+        };
+
+        let zone = self.drop_zone;
+        div()
+            .id("panes")
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .on_drag_move::<DraggedTab>(cx.listener(
+                |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
+                    let from = event.drag(cx).from;
+                    let inside = event.bounds.contains(&event.event.position);
+                    let zone = (inside && this.can_split_with(from))
+                        .then(|| event.event.position.x > event.bounds.center().x);
+                    if this.drop_zone != zone {
+                        this.drop_zone = zone;
+                        cx.notify();
+                    }
+                },
+            ))
+            .on_drop(cx.listener(|this, dragged: &DraggedTab, _, cx| {
+                if let Some(right) = this.drop_zone {
+                    this.drop_tab_on_panes(dragged.from, right, cx)
+                }
+            }))
+            .child(body)
+            .when_some(zone, |d, right| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .w(relative(0.5))
+                        .when(right, |d| d.right_0())
+                        .when(!right, |d| d.left_0())
+                        .m_2()
+                        .rounded_lg()
+                        .border_2()
+                        .border_color(primary)
+                        .bg(accent.opacity(0.25))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .px_3()
+                                .py_1()
+                                .rounded_md()
+                                .bg(popover)
+                                .text_sm()
+                                .child(if right {
+                                    "Open on the right"
+                                } else {
+                                    "Open on the left"
+                                }),
+                        ),
+                )
+            })
+    }
+
     fn render_inspector(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let translation = current_translation(cx);
+        let no_content = Content::default();
+        let notes = &self.focused_content().unwrap_or(&no_content).notes;
         let mut list = div()
             .id("notes")
             .flex()
@@ -1318,7 +1829,7 @@ impl ReaderView {
             .overflow_y_scroll()
             .size_full()
             .p_3();
-        if self.notes.is_empty() {
+        if notes.is_empty() {
             list = list.child(
                 div()
                     .text_sm()
@@ -1326,7 +1837,7 @@ impl ReaderView {
                     .child("No notes in this chapter."),
             );
         }
-        for (ix, note) in self.notes.iter().enumerate() {
+        for (ix, note) in notes.iter().enumerate() {
             let selected = self.selected_note == Some(note.id);
             let label = match note.kind {
                 NoteKind::Footnote => "",
@@ -1359,9 +1870,15 @@ impl ReaderView {
                     )
                     .child(note.text.clone())
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.selected_note = Some(this.notes[ix].id);
-                        let tab = &mut this.tabs[this.active];
-                        tab.location.verse = Some(verse);
+                        let Some(id) = this
+                            .focused_content()
+                            .and_then(|c| c.notes.get(ix))
+                            .map(|n| n.id)
+                        else {
+                            return;
+                        };
+                        this.selected_note = Some(id);
+                        this.tab_mut().location.verse = Some(verse);
                         cx.notify();
                     })),
             );
@@ -1468,6 +1985,7 @@ impl ReaderView {
                     .child(hint("up", "").child(hint("down", "Navigate")))
                     .child(hint("enter", "Open"))
                     .child(hint("cmd-enter", "New tab"))
+                    .child(hint("alt-enter", "Beside"))
                     .child(hint("escape", "Close"))
                     .child(hint("shift-cmd-p", "Commands"))
             });
@@ -1511,6 +2029,7 @@ impl ReaderView {
 
         div()
             .id("palette-backdrop")
+            .occlude()
             .absolute()
             .inset_0()
             .flex()
@@ -1539,6 +2058,7 @@ impl ReaderView {
         let theme = cx.theme();
         div()
             .id("rename-backdrop")
+            .occlude()
             .absolute()
             .inset_0()
             .flex()
@@ -1587,6 +2107,7 @@ impl ReaderView {
         for (ix, tab) in self.tabs.iter().enumerate() {
             let selected = ix == self.active;
             let pinned = tab.pinned;
+            let split = tab.is_split();
             let label = self.tab_title(tab);
             let ghost = label.clone();
             strip = strip.child(
@@ -1615,7 +2136,13 @@ impl ReaderView {
                     })
                     .child(
                         div()
-                            .max_w(px(if pinned { 120. } else { 220. }))
+                            .max_w(px(if pinned {
+                                120.
+                            } else if split {
+                                360.
+                            } else {
+                                220.
+                            }))
                             .truncate()
                             .child(label),
                     )
@@ -1644,12 +2171,24 @@ impl ReaderView {
                     .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
                         this.move_tab(dragged.from, ix, cx)
                     }))
+                    .drag_over::<DraggedPane>(move |style, _, _, _| style.bg(accent))
+                    .on_drop(cx.listener(|this, dragged: &DraggedPane, _, cx| {
+                        this.pane_to_tab(dragged.right, true, cx)
+                    }))
                     .context_menu(move |menu, _, _| {
                         menu.menu(
                             if pinned { "Unpin Tab" } else { "Pin Tab" },
                             Box::new(PinTab { index: ix }),
                         )
                         .menu("Rename Tab…", Box::new(RenameTab { index: ix }))
+                        .menu(
+                            if split {
+                                "Unsplit (Separate Tabs)"
+                            } else {
+                                "Split Right"
+                            },
+                            Box::new(ToggleSplit),
+                        )
                         .separator()
                         .menu("Close Tab", Box::new(CloseTabAt { index: ix }))
                     }),
@@ -1672,6 +2211,10 @@ impl ReaderView {
                     .drag_over::<DraggedTab>(move |style, _, _, _| style.bg(accent))
                     .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
                         this.move_tab(dragged.from, last, cx)
+                    }))
+                    .drag_over::<DraggedPane>(move |style, _, _, _| style.bg(accent))
+                    .on_drop(cx.listener(|this, dragged: &DraggedPane, _, cx| {
+                        this.pane_to_tab(dragged.right, true, cx)
                     })),
             )
             .child(
@@ -1696,7 +2239,10 @@ impl ReaderView {
             "commands" => self.show_palette(&format!("{COMMAND_PREFIX}{arg}"), window, cx),
             "notes" => {
                 self.inspector_open = true;
-                self.selected_note = self.notes.first().map(|n| n.id);
+                self.selected_note = self
+                    .focused_content()
+                    .and_then(|c| c.notes.first())
+                    .map(|n| n.id);
             }
             "nosidebar" => self.update_settings(cx, |s| s.sidebar_open = false),
             "dark" | "light" | "sepia" | "system" => {
@@ -1707,6 +2253,11 @@ impl ReaderView {
                     _ => Appearance::System,
                 };
                 crate::set_appearance(appearance, cx);
+            }
+            "font" => {
+                if let Some(pairing) = FontPairing::from_key(arg) {
+                    self.update_settings(cx, |s| s.font_pairing = pairing);
+                }
             }
             "back" => self.go_back(&GoBack, window, cx),
             "forward" => self.go_forward(&GoForward, window, cx),
@@ -1733,6 +2284,27 @@ impl ReaderView {
                 }
             }
             "version" => self.set_translation(arg.to_uppercase(), cx),
+            "split" => {
+                if !self.tabs[self.active].is_split() {
+                    self.toggle_split(&ToggleSplit, window, cx);
+                }
+                if let Some(r) = bible_core::parse_reference(arg) {
+                    self.tab_mut().navigate(Location {
+                        chapter: r.chapter_ref(),
+                        verse: r.first_verse(),
+                    });
+                    self.show_active(cx);
+                }
+            }
+            "unsplit" => {
+                if self.tabs[self.active].is_split() {
+                    self.toggle_split(&ToggleSplit, window, cx);
+                }
+            }
+            "closepane" => self.close_pane(&ClosePane, window, cx),
+            "focus" => self.focus_pane(arg == "right", cx),
+            "narrow" => self.force_collapsed = true,
+            "dropzone" => self.drop_zone = Some(arg != "left"),
             "pin" => self.pin_tab_at(self.active, cx),
             "rename" => {
                 self.tabs[self.active].rename(arg);
@@ -1779,6 +2351,11 @@ impl Render for ReaderView {
             .on_action(cx.listener(Self::rename_tab))
             .on_action(cx.listener(Self::close_tab_action))
             .on_action(cx.listener(Self::open_in_new_tab))
+            .on_action(cx.listener(Self::open_in_split))
+            .on_action(cx.listener(Self::toggle_split))
+            .on_action(cx.listener(Self::close_pane))
+            .on_action(cx.listener(Self::focus_left_pane))
+            .on_action(cx.listener(Self::focus_right_pane))
             .on_action(cx.listener(Self::copy_verse))
             .on_action(cx.listener(Self::copy_chapter))
             .on_action(cx.listener(Self::search_in))
@@ -1811,6 +2388,14 @@ impl Render for ReaderView {
             }))
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::go_forward))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.drop_zone.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .size_full()
             .relative()
             .flex()
@@ -1818,14 +2403,17 @@ impl Render for ReaderView {
             .bg(theme.background)
             .text_color(theme.foreground)
             .child(self.render_toolbar(window, cx))
-            .when(self.tabs.len() > 1, |d| d.child(self.render_tab_bar(cx)))
+            .when(
+                self.tabs.len() > 1 || self.tabs[self.active].is_split(),
+                |d| d.child(self.render_tab_bar(cx)),
+            )
             .child(
                 div()
                     .flex()
                     .flex_1()
                     .min_h_0()
                     .when(sidebar_open, |d| d.child(self.render_sidebar(window, cx)))
-                    .child(self.render_chapter(window, cx))
+                    .child(self.render_panes(window, cx))
                     .when(self.inspector_open, |d| d.child(self.render_inspector(cx))),
             )
             .when(self.palette_open, |d| d.child(self.render_palette(cx)))
@@ -2218,6 +2806,237 @@ mod tests {
         view.read_with(cx, |v, _| {
             assert_eq!(v.renaming, None);
             assert_eq!(v.tab().name, None);
+        });
+    }
+
+    fn press(window: WindowHandle<Root>, key: &'static str, cx: &mut TestAppContext) {
+        with_window(window, cx, |window, cx| window.press(key, cx));
+    }
+
+    #[gpui_kit::test]
+    fn split_panes_navigate_and_switch_version_independently(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        view.update(cx, |v, cx| v.go_to(ChapterRef::new(43, 3), None, cx));
+        press(window, "cmd-\\", cx);
+        view.read_with(cx, |v, _| {
+            assert!(v.tabs[0].is_split());
+            assert_eq!(v.tabs.len(), 1);
+            assert!(v.tabs[0].focus_side, "the new pane takes focus");
+        });
+
+        // Navigation and version changes go to the focused (right) pane only.
+        view.update(cx, |v, cx| v.go_to(ChapterRef::new(45, 8), None, cx));
+        view.update(cx, |v, cx| v.set_translation("KJV".into(), cx));
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.tabs[0].label(), "John 3 · BSB  |  Romans 8 · KJV");
+            assert_eq!(v.chapter().to_string(), "Romans 8");
+        });
+        let current = cx.read(|cx| cx.global::<Settings>().translation.clone());
+        assert_eq!(current, "KJV");
+
+        // ⌘⌥← moves focus; everything now acts on the left pane.
+        press(window, "cmd-alt-left", cx);
+        view.read_with(cx, |v, _| assert_eq!(v.chapter().to_string(), "John 3"));
+        let current = cx.read(|cx| cx.global::<Settings>().translation.clone());
+        assert_eq!(current, "BSB");
+        press(window, "cmd-]", cx);
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.tabs[0].label(), "John 4 · BSB  |  Romans 8 · KJV");
+            assert!(v.content.contains_key(&v.tab().id));
+            assert_eq!(v.content.len(), 2, "both panes keep their text");
+        });
+
+        // The split is saved.
+        let saved = cx.read(|cx| cx.global::<Settings>().tabs.clone());
+        let side = saved[0].side.as_ref().expect("side saved");
+        assert_eq!(
+            (side.book, side.chapter, side.translation.as_str()),
+            (45, 8, "KJV")
+        );
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_pane_focuses_it(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        press(window, "cmd-\\", cx);
+        press(window, "cmd-alt-left", cx);
+        view.read_with(cx, |v, _| assert!(!v.tabs[0].focus_side));
+        // The right pane's own "next" button both focuses the pane and acts on it.
+        with_window(window, cx, |window, cx| window.click("top-next-right", cx));
+        view.read_with(cx, |v, _| {
+            assert!(v.tabs[0].focus_side);
+            assert_eq!(v.tabs[0].label(), "John 1 · BSB  |  John 2 · BSB");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn dropping_a_tab_on_the_text_splits_beside_it(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        press(window, "cmd-t", cx);
+        view.update(cx, |v, cx| v.go_to(ChapterRef::new(19, 23), None, cx));
+        press(window, "cmd-t", cx);
+        view.update(cx, |v, cx| v.go_to(ChapterRef::new(45, 8), None, cx));
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.tabs.len(), 3);
+            assert!(v.can_split_with(1));
+            assert!(!v.can_split_with(v.active), "not onto itself");
+        });
+
+        // Tab 1 (Psalms 23) joins the active tab (Romans 8) on its left.
+        view.update(cx, |v, cx| v.drop_tab_on_panes(1, false, cx));
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.tabs.len(), 2);
+            assert_eq!(
+                v.tabs[v.active].label(),
+                "Psalms 23 · BSB  |  Romans 8 · BSB"
+            );
+            assert!(!v.can_split_with(0), "a split tab takes no third pane");
+        });
+
+        // Single-pane tabs keep working next to the split one.
+        with_window(window, cx, |window, cx| {
+            window.dispatch_action(Box::new(ActivateTab { index: 0 }), cx)
+        });
+        view.read_with(cx, |v, _| {
+            assert!(!v.tabs[v.active].is_split());
+            assert_eq!(v.chapter().to_string(), "John 1");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn unsplit_and_close_pane(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        press(window, "cmd-\\", cx);
+        view.update(cx, |v, cx| v.go_to(ChapterRef::new(45, 8), None, cx));
+
+        // Dragging a pane out (or ⌘\) makes it a separate tab; focus stays left.
+        press(window, "cmd-\\", cx);
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.tabs.len(), 2);
+            assert!(!v.tabs[0].is_split());
+            assert_eq!(v.tabs[1].label(), "Romans 8 · BSB");
+            assert_eq!(v.active, 0);
+        });
+
+        // Split again, then close the focused pane: the other stays, and ⇧⌘T
+        // brings the closed one back as a tab.
+        press(window, "cmd-\\", cx);
+        press(window, "cmd-shift-\\", cx);
+        view.read_with(cx, |v, _| {
+            assert!(!v.tabs[v.active].is_split());
+            assert_eq!(v.tabs.len(), 2);
+        });
+        press(window, "cmd-shift-t", cx);
+        view.read_with(cx, |v, _| assert_eq!(v.tabs.len(), 3));
+    }
+
+    #[gpui_kit::test]
+    fn palette_opens_a_passage_beside(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        press(window, "cmd-k", cx);
+        with_window(window, cx, |window, cx| window.input("rom 8", cx));
+        press(window, "alt-enter", cx);
+        view.read_with(cx, |v, _| {
+            assert!(!v.palette_open);
+            assert_eq!(v.tabs[0].label(), "John 1 · BSB  |  Romans 8 · BSB");
+            assert_eq!(v.chapter().to_string(), "Romans 8");
+        });
+
+        // Split already: ⌥Enter fills the other pane.
+        press(window, "cmd-k", cx);
+        with_window(window, cx, |window, cx| window.input("ps 23", cx));
+        press(window, "alt-enter", cx);
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.tabs[0].label(), "Psalms 23 · BSB  |  Romans 8 · BSB");
+        });
+
+        // And a plain Enter replaces what the focused pane shows.
+        press(window, "cmd-k", cx);
+        with_window(window, cx, |window, cx| window.input("jn 1", cx));
+        press(window, "enter", cx);
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.tabs[0].label(), "John 1 · BSB  |  Romans 8 · BSB");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn narrow_windows_show_one_pane(cx: &mut TestAppContext) {
+        let Some((_window, view)) = open(cx) else {
+            return;
+        };
+        view.read_with(cx, |v, _| {
+            assert!(v.collapsed(700.));
+            assert!(!v.collapsed(900.));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn dragging_a_tab_onto_the_text_opens_it_on_that_side(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        view.update(cx, |v, cx| v.go_to(ChapterRef::new(19, 23), None, cx));
+        press(window, "cmd-t", cx);
+        view.update(cx, |v, cx| v.go_to(ChapterRef::new(45, 8), None, cx));
+        // Real pointer drag: first tab (top left) to the right half of the text.
+        with_window(window, cx, |window, cx| {
+            window.drag(point(px(40.), px(60.)), point(px(900.), px(400.)), cx)
+        });
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.tabs.len(), 1);
+            assert_eq!(
+                v.tabs[0].label(),
+                "Romans 8 · BSB  |  Psalms 23 · BSB",
+                "dropped on the right half"
+            );
+            assert_eq!(v.drop_zone, None);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn selecting_text_in_a_pane_focuses_it(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        press(window, "cmd-\\", cx);
+        press(window, "cmd-alt-left", cx);
+        view.read_with(cx, |v, _| assert!(!v.tabs[0].focus_side));
+        with_window(window, cx, |window, cx| {
+            window.drag(point(px(750.), px(300.)), point(px(1000.), px(500.)), cx)
+        });
+        view.read_with(cx, |v, _| assert!(v.tabs[0].focus_side));
+        let mut selected = String::new();
+        with_window(window, cx, |window, cx| {
+            selected = gpui_kit::base::TextSelection::selected_text(window, cx);
+        });
+        assert!(!selected.is_empty(), "text in the right pane is selected");
+    }
+
+    #[gpui_kit::test]
+    fn dragging_a_pane_header_to_the_tab_strip_makes_a_tab(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        press(window, "cmd-\\", cx);
+        view.update(cx, |v, cx| v.go_to(ChapterRef::new(45, 8), None, cx));
+        with_window(window, cx, |window, cx| {
+            window.drag(point(px(850.), px(95.)), point(px(700.), px(60.)), cx)
+        });
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.tabs.len(), 2);
+            assert!(!v.tabs[0].is_split());
+            assert_eq!(v.tab().label(), "Romans 8 · BSB");
+            assert_eq!(v.active, 1);
         });
     }
 }

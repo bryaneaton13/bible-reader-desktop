@@ -74,8 +74,8 @@ pub struct Settings {
     pub book: u8,
     pub chapter: u16,
     pub font_size: f32,
-    /// Body font family; one of `READING_FONTS`.
-    pub reading_font: String,
+    /// Title / body typeface pairing.
+    pub font_pairing: FontPairing,
     /// Line height as a multiple of the font size.
     pub line_height: f32,
     /// Width of the text column in px.
@@ -108,6 +108,12 @@ pub struct SavedTab {
     /// Custom tab name; `None` shows the passage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Second pane when the tab is split side by side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<Box<SavedTab>>,
+    /// The right pane (not the left) is the one navigation applies to.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub side_focused: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -154,15 +160,114 @@ impl Appearance {
 
 const RECENT_LIMIT: usize = 12;
 
-/// Body fonts offered in the settings window (all ship with macOS).
-pub const READING_FONTS: [&str; 6] = [
-    "Iowan Old Style",
-    "Charter",
-    "Georgia",
-    "Palatino",
-    "Baskerville",
-    "Times New Roman",
-];
+/// A curated title + body typeface pairing. Not a free-for-all: each one is
+/// a combination that reads well for long text. All but `Classic` ship inside
+/// the app (see `fonts.rs`), so they look the same on every Mac.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FontPairing {
+    /// Iowan Old Style throughout (ships with macOS).
+    #[default]
+    Classic,
+    /// Playfair Display titles, Lora text.
+    Editorial,
+    /// Outfit titles, Source Serif text.
+    Modern,
+    /// Inter titles, Literata text (made for long-form reading on screens).
+    Clean,
+    /// EB Garamond throughout.
+    Garamond,
+    /// Outfit titles, Inter text, for a sans-serif page.
+    Sans,
+}
+
+impl FontPairing {
+    pub const ALL: [FontPairing; 6] = [
+        Self::Classic,
+        Self::Editorial,
+        Self::Modern,
+        Self::Clean,
+        Self::Garamond,
+        Self::Sans,
+    ];
+
+    /// Stable id, as used by the settings dropdown.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Editorial => "editorial",
+            Self::Modern => "modern",
+            Self::Clean => "clean",
+            Self::Garamond => "garamond",
+            Self::Sans => "sans",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.key() == key)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Classic => "Classic",
+            Self::Editorial => "Editorial",
+            Self::Modern => "Modern",
+            Self::Clean => "Clean",
+            Self::Garamond => "Garamond",
+            Self::Sans => "Sans",
+        }
+    }
+
+    /// Menu / dropdown text: name plus the two typefaces.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Classic => "Classic · Iowan Old Style",
+            Self::Editorial => "Editorial · Playfair Display + Lora",
+            Self::Modern => "Modern · Outfit + Source Serif",
+            Self::Clean => "Clean · Inter + Literata",
+            Self::Garamond => "Garamond · EB Garamond",
+            Self::Sans => "Sans · Outfit + Inter",
+        }
+    }
+
+    /// Family for chapter text.
+    pub fn body(self) -> &'static str {
+        match self {
+            Self::Classic => "Iowan Old Style",
+            Self::Editorial => "Lora",
+            Self::Modern => "Source Serif 4",
+            Self::Clean => "Literata",
+            Self::Garamond => "EB Garamond",
+            Self::Sans => "Inter",
+        }
+    }
+
+    /// Family for verse numbers. They use the OpenType `sups` feature, and Lora
+    /// and Outfit only have superscript glyphs for some digits, so those
+    /// pairings borrow a family that has all ten.
+    pub fn numbers(self) -> &'static str {
+        match self {
+            Self::Classic => "Iowan Old Style",
+            Self::Editorial => "Playfair Display",
+            Self::Modern => "Source Serif 4",
+            Self::Clean => "Inter",
+            Self::Garamond => "EB Garamond",
+            Self::Sans => "Inter",
+        }
+    }
+
+    /// Family for book and chapter titles and section headings.
+    pub fn display(self) -> &'static str {
+        match self {
+            Self::Classic => "Iowan Old Style",
+            Self::Editorial => "Playfair Display",
+            Self::Modern => "Outfit",
+            Self::Clean => "Inter",
+            Self::Garamond => "EB Garamond",
+            Self::Sans => "Outfit",
+        }
+    }
+}
 
 pub const FONT_SIZE_RANGE: (f32, f32) = (12., 36.);
 pub const LINE_HEIGHT_RANGE: (f32, f32) = (1.2, 2.2);
@@ -175,7 +280,7 @@ impl Default for Settings {
             book: 43,
             chapter: 1,
             font_size: 19.0,
-            reading_font: READING_FONTS[0].into(),
+            font_pairing: FontPairing::default(),
             line_height: 1.65,
             reading_width: 680.,
             red_letter: true,

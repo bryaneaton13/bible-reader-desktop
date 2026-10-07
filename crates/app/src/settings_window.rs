@@ -11,7 +11,7 @@ use gpui_kit::component::setting::{
 use gpui_kit::*;
 
 use crate::library::{
-    Appearance, FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, READING_FONTS, READING_WIDTH_RANGE, Settings,
+    Appearance, FONT_SIZE_RANGE, FontPairing, LINE_HEIGHT_RANGE, READING_WIDTH_RANGE, Settings,
 };
 
 /// The settings window, if open.
@@ -68,9 +68,14 @@ fn switch(
 
 fn pages() -> Vec<SettingPage> {
     let defaults = Settings::default();
-    let fonts = READING_FONTS
+    let fonts = FontPairing::ALL
         .iter()
-        .map(|f| (SharedString::from(*f), SharedString::from(*f)))
+        .map(|p| {
+            (
+                SharedString::from(p.key()),
+                SharedString::from(p.description()),
+            )
+        })
         .collect();
     let themes = Appearance::ALL
         .iter()
@@ -83,17 +88,20 @@ fn pages() -> Vec<SettingPage> {
         .group(
             SettingGroup::new().title("Text").items([
                 SettingItem::new(
-                    "Font",
+                    "Font pairing",
                     SettingField::dropdown(
                         fonts,
-                        |cx: &App| cx.global::<Settings>().reading_font.clone().into(),
+                        |cx: &App| cx.global::<Settings>().font_pairing.key().into(),
                         |value: SharedString, cx: &mut App| {
-                            update(cx, |s| s.reading_font = value.to_string())
+                            if let Some(p) = FontPairing::from_key(&value) {
+                                update(cx, |s| s.font_pairing = p)
+                            }
                         },
                     )
-                    .default_value(SharedString::from(defaults.reading_font.clone())),
+                    .default_value(SharedString::from(defaults.font_pairing.key())),
                 )
-                .keywords(["typeface", "serif"]),
+                .description("Typeface for titles and verse numbers, and for the text.")
+                .keywords(["font", "typeface", "serif", "playfair", "inter", "lora"]),
                 SettingItem::new(
                     "Text size",
                     number(

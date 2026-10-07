@@ -11,11 +11,12 @@ use bible_core::{ChapterRef, Reference, VerseId, find_book, parse_reference};
 use bible_store::SearchHit;
 use gpui_kit::Action;
 
-use crate::library::Appearance;
+use crate::library::{Appearance, FontPairing};
 use crate::{
-    CloseTab, CopyChapter, CopyVerse, DecreaseFont, IncreaseFont, NewTab, OpenSettings,
-    ReopenClosedTab, ResetFont, SelectTranslation, SetAppearance, ToggleInspector, ToggleRedLetter,
-    ToggleSidebar, ToggleVerseNumbers,
+    ClosePane, CloseTab, CopyChapter, CopyVerse, DecreaseFont, FocusLeftPane, FocusRightPane,
+    IncreaseFont, NewTab, OpenSettings, ReopenClosedTab, ResetFont, SelectTranslation,
+    SetAppearance, SetFontPairing, ToggleInspector, ToggleRedLetter, ToggleSidebar, ToggleSplit,
+    ToggleVerseNumbers,
 };
 
 pub const SEARCH_LIMIT: usize = 100;
@@ -137,7 +138,10 @@ pub struct Context<'a> {
     pub translations: Vec<(String, String)>,
     pub translation: &'a str,
     pub appearance: Appearance,
+    pub font_pairing: FontPairing,
     pub active_pinned: bool,
+    /// The active tab shows two panes side by side.
+    pub split: bool,
     /// Full-text search over the given books (canonical numbers).
     pub search: &'a dyn Fn(&str, RangeInclusive<u8>) -> Vec<SearchHit>,
 }
@@ -193,6 +197,7 @@ pub fn build(query: &str, cx: &Context) -> Vec<Group> {
 
     if let Some(rest) = query.strip_prefix(COMMAND_PREFIX) {
         push("Commands".into(), commands(rest.trim(), cx));
+        push("Appearance".into(), appearance(rest.trim(), cx));
         return groups;
     }
 
@@ -212,6 +217,7 @@ pub fn build(query: &str, cx: &Context) -> Vec<Group> {
                 .collect(),
         );
         push("Commands".into(), commands("", cx));
+        push("Appearance".into(), appearance("", cx));
         return groups;
     }
 
@@ -242,6 +248,12 @@ pub fn build(query: &str, cx: &Context) -> Vec<Group> {
                 .collect(),
         );
     }
+    if scope.is_none() {
+        push(
+            "Appearance".into(),
+            appearance(query, cx).into_iter().take(6).collect(),
+        );
+    }
     groups
 }
 
@@ -269,6 +281,32 @@ fn commands(query: &str, cx: &Context) -> Vec<Row> {
             Box::new(ReopenClosedTab),
         ),
         ("Close Tab".into(), &[], Box::new(CloseTab)),
+    ];
+    if cx.split {
+        all.push((
+            "Unsplit (Separate Tabs)".into(),
+            &["side", "compare", "parallel", "columns"],
+            Box::new(ToggleSplit),
+        ));
+        all.push(("Close Pane".into(), &["split"], Box::new(ClosePane)));
+        all.push((
+            "Focus Left Pane".into(),
+            &["split", "side"],
+            Box::new(FocusLeftPane),
+        ));
+        all.push((
+            "Focus Right Pane".into(),
+            &["split", "side"],
+            Box::new(FocusRightPane),
+        ));
+    } else {
+        all.push((
+            "Split Right".into(),
+            &["side", "compare", "parallel", "columns", "two"],
+            Box::new(ToggleSplit),
+        ));
+    }
+    let rest: Vec<(String, &[&str], Box<dyn Action>)> = vec![
         (
             if cx.active_pinned {
                 "Unpin Tab".into()
@@ -351,6 +389,7 @@ fn commands(query: &str, cx: &Context) -> Vec<Row> {
             Box::new(ResetFont),
         ),
     ];
+    all.extend(rest);
     for (index, (abbrev, name)) in cx.translations.iter().enumerate() {
         if abbrev != cx.translation {
             all.push((
@@ -360,16 +399,36 @@ fn commands(query: &str, cx: &Context) -> Vec<Row> {
             ));
         }
     }
-    for appearance in Appearance::ALL {
-        if appearance != cx.appearance {
-            all.push((
-                format!("Theme: {}", appearance.label()),
-                &["appearance", "color", "mode"],
-                Box::new(SetAppearance { appearance }),
-            ));
-        }
-    }
     all.into_iter()
+        .filter(|(label, keywords, _)| matches(query, label, keywords))
+        .map(|(label, _, action)| Row::Command { label, action })
+        .collect()
+}
+
+/// Theme and font pairing switches. Shown last, after Bible results.
+fn appearance(query: &str, cx: &Context) -> Vec<Row> {
+    let themes = Appearance::ALL
+        .into_iter()
+        .filter(|a| *a != cx.appearance)
+        .map(|appearance| {
+            (
+                format!("Theme: {}", appearance.label()),
+                &["appearance", "color", "mode"][..],
+                Box::new(SetAppearance { appearance }) as Box<dyn Action>,
+            )
+        });
+    let fonts = FontPairing::ALL
+        .into_iter()
+        .filter(|p| *p != cx.font_pairing)
+        .map(|pairing| {
+            (
+                format!("Font: {}", pairing.description()),
+                &["typeface", "pairing", "serif", "text", "style"][..],
+                Box::new(SetFontPairing { pairing }) as Box<dyn Action>,
+            )
+        });
+    themes
+        .chain(fonts)
         .filter(|(label, keywords, _)| matches(query, label, keywords))
         .map(|(label, _, action)| Row::Command { label, action })
         .collect()
@@ -407,7 +466,9 @@ mod tests {
             ],
             translation: "BSB",
             appearance: Appearance::System,
+            font_pairing: FontPairing::Classic,
             active_pinned: false,
+            split: false,
             search: &search,
         };
         f(build(query, &cx))
@@ -420,11 +481,30 @@ mod tests {
     #[test]
     fn empty_query_shows_tabs_recent_commands() {
         with("", |groups| {
-            assert_eq!(headings(&groups), ["Tabs", "Recent", "Commands"]);
+            assert_eq!(
+                headings(&groups),
+                ["Tabs", "Recent", "Commands", "Appearance"]
+            );
             // The active tab and the current chapter are left out.
             assert_eq!(groups[0].rows.len(), 1);
             assert_eq!(groups[1].rows[0].label(), "Psalms 23");
             assert_eq!(groups[1].rows.len(), 1);
+        });
+    }
+
+    #[test]
+    fn appearance_rows_come_after_verses() {
+        with("dark", |groups| {
+            let h = headings(&groups);
+            assert_eq!(h.last(), Some(&"Appearance"));
+            if let Some(v) = h.iter().position(|x| *x == "Verses") {
+                assert!(v < h.len() - 1);
+            }
+        });
+        with("lora", |groups| {
+            let last = groups.last().unwrap();
+            assert_eq!(last.heading, "Appearance");
+            assert!(last.rows[0].label().starts_with("Font: Editorial"));
         });
     }
 
@@ -443,8 +523,8 @@ mod tests {
             assert_eq!(headings(&groups), ["Verses"]);
         });
         with("sepia", |groups| {
-            assert_eq!(headings(&groups)[0], "Commands");
-            assert_eq!(groups[0].rows[0].label(), "Theme: Sepia");
+            assert_eq!(headings(&groups), ["Verses", "Appearance"]);
+            assert_eq!(groups[1].rows[0].label(), "Theme: Sepia");
         });
         with("king james", |groups| {
             assert_eq!(

@@ -143,7 +143,13 @@ pub fn render_block(
 
 /// Build explicit text runs so verse numbers can carry the `sups` feature,
 /// which highlights can't express.
-pub fn build_runs(rendered: &RenderedBlock, base: &gpui_kit::TextStyle) -> Vec<gpui_kit::TextRun> {
+///
+/// `number_family` sets the typeface for verse numbers (`None` keeps the body font).
+pub fn build_runs(
+    rendered: &RenderedBlock,
+    base: &gpui_kit::TextStyle,
+    number_family: Option<&gpui_kit::SharedString>,
+) -> Vec<gpui_kit::TextRun> {
     let len = rendered.text.len();
     let mut points: Vec<usize> = vec![0, len];
     for (r, _) in &rendered.highlights {
@@ -177,6 +183,9 @@ pub fn build_runs(rendered: &RenderedBlock, base: &gpui_kit::TextStyle) -> Vec<g
             .any(|r| r.start <= piece.start && piece.end <= r.end)
         {
             run.font.features = sups.features.clone();
+            if let Some(family) = number_family {
+                run.font.family = family.clone();
+            }
         }
         runs.push(run);
     }

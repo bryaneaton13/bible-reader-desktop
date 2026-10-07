@@ -15,11 +15,12 @@ crates/
     main.rs         actions, key bindings, app menus, window, `screenshot` dev feature
     reader.rs       ReaderView: title-bar toolbar, tab bar, sidebar, chapter, notes panel, palette host; headless UI tests
     selectable.rs  SelectableBlock: wraps a chapter block's InteractiveText so Root's text selection (drag, ⌘C) works with styled runs
-    tabs.rs         Tab (location, translation, back/forward, scroll) + save/restore; unit tests
+    tabs.rs         Tab (location, translation, back/forward, scroll, optional `side` pane for split view) + save/restore; unit tests
     settings_window.rs  Settings window (⌘,): font, size, line spacing, width, theme; gpui-kit `setting`
     palette.rs      ⌘K palette rows (Go to / Tabs / Recent / Commands / Verses), each carrying its Action; unit tests
     translation_picker.rs  rows for the searchable translation Select
     chapter_view.rs Block -> styled text runs (verse numbers, red letter, notes, jump highlight); unit tests
+    fonts.rs        bundled typefaces (assets/fonts/*.ttf, OFL) registered at startup for the font pairings
     library.rs      Library (open translations), Settings (persisted JSON: tabs, recents, appearance), data_dir()
     appearance.rs   applies System / Light / Sepia / Dark to gpui-kit's Theme
     tray.rs         menu bar item (gpui-tray)
@@ -120,6 +121,7 @@ This builds with `--features screenshot` and runs the real app with a throwaway 
 - Arg 2 is the passage to open first (`ps 23`, `1 cor 13:4`).
 - Arg 3 is a comma-separated list of steps, run in order:
   - `light`, `sepia`, `dark`, `system` set the theme.
+  - `font:classic|editorial|modern|clean|garamond|sans` sets the title + body font pairing.
   - `notes` opens the footnotes panel and selects the first note.
   - `nosidebar` hides the sidebar.
   - `version:kjv` switches translation.
@@ -127,6 +129,7 @@ This builds with `--features screenshot` and runs the real app with a throwaway 
   - `commands:<query>` opens the palette in commands-only mode (⇧⌘P).
   - `goto:<passage>`, `back`, `forward` navigate the active tab.
   - `newtab`, `closetab`, `tab:<n>` (1-based) manage tabs.
+  - `split` (or `split:<passage>` to also navigate the new right pane), `unsplit`, `closepane`, `focus:left` / `focus:right`, `narrow` (one pane at a time), `dropzone:left` / `dropzone:right` (the tab-drag overlay).
 - To start from saved state, set `SHOT_SETTINGS=path/to/settings.json`.
 - When you add UI state worth checking, add a step for it in `ReaderView::debug_action` (`reader.rs`, `#[cfg(feature = "screenshot")]`), then list it here and in `scripts/shot.sh`.
 - Steps run before the first frame. A window that isn't key doesn't reliably repaint again before the capture.
@@ -145,6 +148,9 @@ Live capture and synthetic input (`osascript ... keystroke`, `cliclick`) need Sc
 
 ## Gotchas learned the hard way
 
+- **Split view:** a split is one tab with two panes. `Tab.side: Option<Box<Tab>>` is the right pane (a `Tab` reused for its location, translation, history and scroll); `focus_side` says which pane navigation applies to. `ReaderView::tab()` / `tab_mut()` return the *focused* pane, so sidebar, ⌘K, ⌘[ ⌘], ⌘1–3 and the notes panel just work on it. Chapter text lives in `ReaderView.content` keyed by pane id, loaded in `show_active` (focused pane, plus the other pane if missing). `Settings.translation` mirrors the focused pane. Clicking or selecting text in a pane focuses it (capture-phase mouse down on the pane frame). Each pane header has its own translation `Select` (`translation_select` left, `side_select` right); the toolbar one only shows when not split. Below `SPLIT_MIN_WIDTH` (760pt of content) only the focused pane shows, with a switcher row. Only two panes, and a split tab can't be dropped into another.
+
+- **Fonts:** `Settings.font_pairing` (`library::FontPairing`) picks body, display (titles, headings) and verse-number families. Bundled fonts are static Regular/Bold/Italic TTFs, subset to Latin, and `include_bytes!`'d in `fonts.rs`. Variable fonts don't pick weights on GPUI/macOS, so re-cut new ones with fonttools `varLib.instancer`, then fix the name table so each family is a plain Regular/Bold/Italic set. Verse numbers use `sups`; Lora and Outfit lack superscript digits 0 and 5-9, hence `FontPairing::numbers()`.
 - **Icons:** `gpui_kit::application()` does not register assets. `main.rs` calls `.with_assets(gpui_kit::assets::Assets)`. Without it, every `IconName` renders blank. Only about 100 default Lucide icons are embedded; see `default-icons.txt` in `gpui-kit-assets`.
 - **Themes:** `Theme::change(mode)` reloads the registered light or dark theme. Sepia is Light plus a `Theme::update` overlay (`appearance.rs`). Re-apply after any `Theme::change`. `ReaderView` observes the window appearance, so `System` follows macOS.
 - **Actions from popup menus** (theme and text-size dropdowns) are handled at app level (`cx.on_action` in `main.rs`) or by the focused `Reader` context. App-level handlers work whatever has focus.
@@ -158,4 +164,4 @@ Live capture and synthetic input (`osascript ... keystroke`, `cliclick`) need Sc
 
 ## Keyboard map (keep README in sync)
 
-⌘K / ⌘P / ⌘L / ⌘F palette · ⇧⌘P commands · ⌘T new tab · ⌘W close tab (last tab closes the window) · ⇧⌘T reopen closed tab · ⌃Tab / ⌃⇧Tab or ⇧⌘] / ⇧⌘[ next/previous tab · ⇧⌘W close window · ← → / ⌘[ ⌘] / ⌥← ⌥→ prev/next chapter · ⌘Enter in palette: open in new tab · `in:nt` / `in:john` scopes a palette search · ⌘, settings · ⌘B sidebar · ⌥⌘B focus sidebar (arrows move, Enter opens, ⌥↑↓ book, Esc back) · ⌃⌘← ⌃⌘→ back/forward · ⌘1–3 translation · ⌘+ ⌘− ⌘0 text size · ⌃⌘S sidebar · ⌥⌘N notes · drag to select text, ⌘C copy · ⇧⌘C copy verse with citation · ⌥⌘C copy chapter · ⇧⌘L dark/light · View ▸ Theme for Sepia / System.
+⌘K / ⌘P / ⌘L / ⌘F palette · ⇧⌘P commands · ⌘T new tab · ⌘W close tab (last tab closes the window) · ⇧⌘T reopen closed tab · ⌃Tab / ⌃⇧Tab or ⇧⌘] / ⇧⌘[ next/previous tab · ⇧⌘W close window · ← → / ⌘[ ⌘] / ⌥← ⌥→ prev/next chapter · ⌘Enter in palette: open in new tab · ⌥Enter in palette: open beside (split) · ⌘\ split right / unsplit · ⇧⌘\ close pane · ⌘⌥← ⌘⌥→ focus left/right pane · drag a tab onto the left or right half of the text to split, drag a pane header to the tab strip to unsplit · `in:nt` / `in:john` scopes a palette search · ⌘, settings · ⌘B sidebar · ⌥⌘B focus sidebar (arrows move, Enter opens, ⌥↑↓ book, Esc back) · ⌃⌘← ⌃⌘→ back/forward · ⌘1–3 translation · ⌘+ ⌘− ⌘0 text size · ⌃⌘S sidebar · ⌥⌘N notes · drag to select text, ⌘C copy · ⇧⌘C copy verse with citation · ⌥⌘C copy chapter · ⇧⌘L dark/light · View ▸ Theme for Sepia / System.

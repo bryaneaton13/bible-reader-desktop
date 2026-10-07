@@ -1,5 +1,6 @@
 mod appearance;
 mod chapter_view;
+mod fonts;
 mod library;
 mod palette;
 mod reader;
@@ -14,7 +15,7 @@ use gpui_kit::base::Root;
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 
-use crate::library::{Appearance, Library, Settings, data_dir, verse_of_the_day};
+use crate::library::{Appearance, FontPairing, Library, Settings, data_dir, verse_of_the_day};
 use crate::reader::ReaderView;
 
 actions!(
@@ -51,6 +52,11 @@ actions!(
         FocusSidebar,
         FocusReader,
         OpenInNewTab,
+        OpenInSplit,
+        ToggleSplit,
+        ClosePane,
+        FocusLeftPane,
+        FocusRightPane,
         SidebarLeft,
         SidebarRight,
         SidebarUp,
@@ -75,6 +81,13 @@ pub struct SetAppearance {
     pub appearance: Appearance,
 }
 
+/// Pick the title / body typeface pairing.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = bible_reader, no_json)]
+pub struct SetFontPairing {
+    pub pairing: FontPairing,
+}
+
 /// The main window, if open. Closing it leaves the app running in the menu bar.
 struct MainWindow(Option<WindowHandle<Root>>, Option<Entity<ReaderView>>);
 
@@ -94,6 +107,7 @@ fn main() {
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx| {
             gpui_kit::init(cx);
+            fonts::register(cx);
             cx.set_global(library);
             cx.set_global(Settings::load());
             cx.set_global(MainWindow(None, None));
@@ -106,6 +120,12 @@ fn main() {
             cx.on_action(|_: &OpenVerseOfTheDay, cx| open_reader(Some(verse_of_the_day()), cx));
             cx.on_action(tray::copy_verse_of_the_day);
             cx.on_action(|action: &SetAppearance, cx| set_appearance(action.appearance, cx));
+            cx.on_action(|action: &SetFontPairing, cx| {
+                cx.update_global::<Settings, _>(|s, _| {
+                    s.font_pairing = action.pairing;
+                    s.save();
+                });
+            });
             cx.on_action(|_: &ToggleDark, cx| {
                 let dark = gpui_kit::component::Theme::global(cx).mode.is_dark();
                 set_appearance(
@@ -150,6 +170,12 @@ fn main() {
                 Menu::new("View").items([
                     MenuItem::action("Toggle Sidebar", ToggleSidebar),
                     MenuItem::action("Focus Sidebar", FocusSidebar),
+                    MenuItem::separator(),
+                    MenuItem::action("Split Right / Unsplit", ToggleSplit),
+                    MenuItem::action("Close Pane", ClosePane),
+                    MenuItem::action("Focus Left Pane", FocusLeftPane),
+                    MenuItem::action("Focus Right Pane", FocusRightPane),
+                    MenuItem::separator(),
                     MenuItem::action("Toggle Notes", ToggleInspector),
                     MenuItem::action("Toggle Red Letter", ToggleRedLetter),
                     MenuItem::action("Toggle Verse Numbers", ToggleVerseNumbers),
@@ -267,6 +293,11 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-f", OpenPalette, Some("Reader")),
         KeyBinding::new("escape", ClosePalette, Some("Palette")),
         KeyBinding::new("cmd-enter", OpenInNewTab, Some("Palette")),
+        KeyBinding::new("alt-enter", OpenInSplit, Some("Palette")),
+        KeyBinding::new("cmd-\\", ToggleSplit, Some("Reader")),
+        KeyBinding::new("cmd-shift-\\", ClosePane, Some("Reader")),
+        KeyBinding::new("cmd-alt-left", FocusLeftPane, Some("Reader")),
+        KeyBinding::new("cmd-alt-right", FocusRightPane, Some("Reader")),
         KeyBinding::new("cmd-]", NextChapter, Some("Reader")),
         KeyBinding::new("cmd-[", PrevChapter, Some("Reader")),
         KeyBinding::new("alt-right", NextChapter, Some("Reader")),
