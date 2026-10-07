@@ -12,7 +12,7 @@
 # optionally navigating the new pane), unsplit, closepane, focus:left|right,
 # narrow (one pane at a time), dropzone:left|right (tab-drag overlay),
 # font:classic|editorial|modern|clean|garamond|sans (title + body pairing).
-# SHOT_WINDOW=settings captures the Settings window instead of the reader.
+# SHOT_WINDOW=settings|shortcuts captures that window instead of the reader.
 # Set SHOT_SETTINGS to a settings.json to start from (e.g. with recents).
 set -euo pipefail
 

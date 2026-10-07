@@ -1,11 +1,13 @@
 mod appearance;
 mod chapter_view;
 mod fonts;
+mod keymap;
 mod library;
 mod palette;
 mod reader;
 mod selectable;
 mod settings_window;
+mod shortcuts_window;
 mod suggestions;
 mod tabs;
 mod translation_picker;
@@ -50,6 +52,7 @@ actions!(
         ToggleVerseNumbers,
         ToggleDark,
         OpenSettings,
+        OpenShortcuts,
         FocusSidebar,
         FocusReader,
         OpenInNewTab,
@@ -114,11 +117,13 @@ fn main() {
             cx.set_global(Settings::load());
             cx.set_global(MainWindow(None, None));
             cx.set_global(settings_window::SettingsWindow(None));
+            cx.set_global(shortcuts_window::ShortcutsWindow(None));
 
             bind_keys(cx);
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.on_action(|_: &OpenReader, cx| open_reader(None, cx));
             cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
+            cx.on_action(|_: &OpenShortcuts, cx| shortcuts_window::open(cx));
             cx.on_action(|_: &OpenVerseOfTheDay, cx| open_reader(Some(verse_of_the_day()), cx));
             cx.on_action(tray::copy_verse_of_the_day);
             cx.on_action(|action: &SetAppearance, cx| set_appearance(action.appearance, cx));
@@ -204,6 +209,7 @@ fn main() {
                     MenuItem::action("Show Next Tab", NextTab),
                     MenuItem::action("Show Previous Tab", PrevTab),
                 ]),
+                Menu::new("Help").items([MenuItem::action("Keyboard Shortcuts", OpenShortcuts)]),
             ]);
 
             if let Err(err) = tray::install(cx) {
@@ -220,7 +226,7 @@ fn main() {
 /// BIBLE_READER_SCREENSHOT=out.png   where to write the PNG (required)
 /// BIBLE_READER_GOTO="ps 23"         passage to open first
 /// BIBLE_READER_ACTIONS="palette:love one another,notes,dark"
-/// BIBLE_READER_SCREENSHOT_WINDOW=settings   capture the Settings window instead
+/// BIBLE_READER_SCREENSHOT_WINDOW=settings|shortcuts   capture that window instead
 #[cfg(feature = "screenshot")]
 mod screenshot {
     use std::time::Duration;
@@ -255,14 +261,20 @@ mod screenshot {
             }
         });
         // BIBLE_READER_SCREENSHOT_WINDOW=settings captures the Settings window.
-        let target = if std::env::var("BIBLE_READER_SCREENSHOT_WINDOW").as_deref() == Ok("settings")
-        {
-            settings_window::open(cx);
-            cx.global::<settings_window::SettingsWindow>()
-                .0
-                .unwrap_or(window)
-        } else {
-            window
+        let target = match std::env::var("BIBLE_READER_SCREENSHOT_WINDOW").as_deref() {
+            Ok("settings") => {
+                settings_window::open(cx);
+                cx.global::<settings_window::SettingsWindow>()
+                    .0
+                    .unwrap_or(window)
+            }
+            Ok("shortcuts") => {
+                shortcuts_window::open(cx);
+                cx.global::<shortcuts_window::ShortcutsWindow>()
+                    .0
+                    .unwrap_or(window)
+            }
+            _ => window,
         };
         cx.spawn(async move |cx| {
             cx.background_executor()
@@ -283,70 +295,7 @@ mod screenshot {
 }
 
 pub(crate) fn bind_keys(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-,", OpenSettings, None),
-        KeyBinding::new("cmd-shift-w", CloseWindow, None),
-        KeyBinding::new("cmd-t", NewTab, Some("Reader")),
-        KeyBinding::new("cmd-w", CloseTab, Some("Reader")),
-        KeyBinding::new("cmd-shift-t", ReopenClosedTab, Some("Reader")),
-        KeyBinding::new("ctrl-tab", NextTab, Some("Reader")),
-        KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Reader")),
-        KeyBinding::new("cmd-}", NextTab, Some("Reader")),
-        KeyBinding::new("cmd-{", PrevTab, Some("Reader")),
-        KeyBinding::new("cmd-p", OpenPalette, Some("Reader")),
-        KeyBinding::new("cmd-shift-p", OpenCommands, Some("Reader")),
-        KeyBinding::new("cmd-k", OpenPalette, Some("Reader")),
-        KeyBinding::new("cmd-l", OpenPalette, Some("Reader")),
-        KeyBinding::new("cmd-f", OpenPalette, Some("Reader")),
-        KeyBinding::new(
-            "cmd-shift-f",
-            palette::OpenSearchPage {
-                query: String::new(),
-            },
-            Some("Reader"),
-        ),
-        KeyBinding::new("escape", CloseSearch, Some("SearchPage")),
-        KeyBinding::new("escape", ClosePalette, Some("Palette")),
-        KeyBinding::new("cmd-enter", OpenInNewTab, Some("Palette")),
-        KeyBinding::new("alt-enter", OpenInSplit, Some("Palette")),
-        KeyBinding::new("cmd-\\", ToggleSplit, Some("Reader")),
-        KeyBinding::new("cmd-shift-\\", ClosePane, Some("Reader")),
-        KeyBinding::new("cmd-alt-left", FocusLeftPane, Some("Reader")),
-        KeyBinding::new("cmd-alt-right", FocusRightPane, Some("Reader")),
-        KeyBinding::new("cmd-]", NextChapter, Some("Reader")),
-        KeyBinding::new("cmd-[", PrevChapter, Some("Reader")),
-        KeyBinding::new("alt-right", NextChapter, Some("Reader")),
-        KeyBinding::new("alt-left", PrevChapter, Some("Reader")),
-        KeyBinding::new("right", NextChapter, Some("Reader")),
-        KeyBinding::new("left", PrevChapter, Some("Reader")),
-        KeyBinding::new("cmd-b", ToggleSidebar, Some("Reader")),
-        KeyBinding::new("cmd-alt-b", FocusSidebar, Some("Reader")),
-        // Sidebar chapter picker: arrows move a cursor, Enter opens.
-        KeyBinding::new("left", SidebarLeft, Some("Sidebar")),
-        KeyBinding::new("right", SidebarRight, Some("Sidebar")),
-        KeyBinding::new("up", SidebarUp, Some("Sidebar")),
-        KeyBinding::new("down", SidebarDown, Some("Sidebar")),
-        KeyBinding::new("alt-up", SidebarPrevBook, Some("Sidebar")),
-        KeyBinding::new("alt-down", SidebarNextBook, Some("Sidebar")),
-        KeyBinding::new("enter", SidebarOpen, Some("Sidebar")),
-        KeyBinding::new("escape", FocusReader, Some("Sidebar")),
-        KeyBinding::new("ctrl-cmd-left", GoBack, Some("Reader")),
-        KeyBinding::new("ctrl-cmd-right", GoForward, Some("Reader")),
-        KeyBinding::new("cmd-=", IncreaseFont, Some("Reader")),
-        KeyBinding::new("cmd-+", IncreaseFont, Some("Reader")),
-        KeyBinding::new("cmd--", DecreaseFont, Some("Reader")),
-        KeyBinding::new("cmd-0", ResetFont, Some("Reader")),
-        KeyBinding::new("cmd-ctrl-s", ToggleSidebar, Some("Reader")),
-        KeyBinding::new("cmd-alt-n", ToggleInspector, Some("Reader")),
-        KeyBinding::new("cmd-shift-l", ToggleDark, Some("Reader")),
-        KeyBinding::new("cmd-shift-c", CopyVerse, Some("Reader")),
-        KeyBinding::new("cmd-alt-c", CopyChapter, Some("Reader")),
-        KeyBinding::new("cmd-1", SelectTranslation { index: 0 }, Some("Reader")),
-        KeyBinding::new("cmd-2", SelectTranslation { index: 1 }, Some("Reader")),
-        KeyBinding::new("cmd-3", SelectTranslation { index: 2 }, Some("Reader")),
-        KeyBinding::new("cmd-4", SelectTranslation { index: 3 }, Some("Reader")),
-    ]);
+    keymap::bind(cx);
     cx.on_action(|_: &CloseWindow, cx| {
         if let Some(window) = cx.global::<MainWindow>().0 {
             let _ = window.update(cx, |_, window, _| window.remove_window());

@@ -14,9 +14,9 @@ use gpui_kit::Action;
 use crate::library::{Appearance, FontPairing};
 use crate::{
     ClosePane, CloseTab, CopyChapter, CopyVerse, DecreaseFont, FocusLeftPane, FocusRightPane,
-    IncreaseFont, NewTab, OpenSettings, ReopenClosedTab, ResetFont, SelectTranslation,
-    SetAppearance, SetFontPairing, ToggleInspector, ToggleRedLetter, ToggleSidebar, ToggleSplit,
-    ToggleVerseNumbers,
+    IncreaseFont, NewTab, OpenSettings, OpenShortcuts, ReopenClosedTab, ResetFont,
+    SelectTranslation, SetAppearance, SetFontPairing, ToggleInspector, ToggleRedLetter,
+    ToggleSidebar, ToggleSplit, ToggleVerseNumbers,
 };
 
 /// Verses fetched for the palette; the search page asks for more.
@@ -438,6 +438,11 @@ fn commands(query: &str, cx: &Context) -> Vec<Row> {
             "Settings…".into(),
             &["preferences", "font", "line", "width", "options"],
             Box::new(OpenSettings),
+        ),
+        (
+            "Keyboard Shortcuts".into(),
+            &["keys", "hotkeys", "help", "bindings", "cheat sheet"],
+            Box::new(OpenShortcuts),
         ),
         (
             "Copy Verse with Citation".into(),

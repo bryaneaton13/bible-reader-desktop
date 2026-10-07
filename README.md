@@ -83,6 +83,8 @@ scripts/bundle.sh --install   # also copy to ~/Applications and launch it
 
 ## Keyboard shortcuts
 
+Press ⌘/ in the app for the same list.
+
 | Keys | Action |
 |---|---|
 | ⌘K / ⌘P (also ⌘L / ⌘F) | Palette: go to a passage, search words, switch tabs, run commands |
@@ -97,12 +99,14 @@ scripts/bundle.sh --install   # also copy to ~/Applications and launch it
 | ⌘B | Toggle sidebar |
 | ⌥⌘B | Focus sidebar: arrows move, Enter opens, ⌥↑ / ⌥↓ change book, Esc returns |
 | ⌃⌘← / ⌃⌘→ | Back / forward through history |
-| ⌘1 … ⌘3 | Switch translation |
+| ⌘1 … ⌘4 | Switch translation |
 | ⌘+ / ⌘− / ⌘0 | Text size |
 | ⌥⌘N | Toggle footnotes panel |
 | ⇧⌘C / ⌥⌘C | Copy verse with citation / copy chapter |
 | ⇧⌘L | Toggle dark mode (View ▸ Theme for Sepia and System) |
 | ⌘, | Settings |
+| ⌘/ | Keyboard shortcuts window (also Help menu and the palette) |
+| ⇧⌘W / ⌘Q | Close window / quit |
 
 Settings and your tabs are saved in `~/Library/Application Support/BibleReader/settings.json`.
 
