@@ -13,9 +13,9 @@ use gpui_kit::Action;
 
 use crate::library::Appearance;
 use crate::{
-    CloseTab, DecreaseFont, IncreaseFont, NewTab, OpenSettings, ReopenClosedTab, ResetFont,
-    SelectTranslation, SetAppearance, ToggleInspector, ToggleRedLetter, ToggleSidebar,
-    ToggleVerseNumbers,
+    CloseTab, CopyChapter, CopyVerse, DecreaseFont, IncreaseFont, NewTab, OpenSettings,
+    ReopenClosedTab, ResetFont, SelectTranslation, SetAppearance, ToggleInspector, ToggleRedLetter,
+    ToggleSidebar, ToggleVerseNumbers,
 };
 
 pub const SEARCH_LIMIT: usize = 100;
@@ -309,6 +309,12 @@ fn commands(query: &str, cx: &Context) -> Vec<Row> {
             &["preferences", "font", "line", "width", "options"],
             Box::new(OpenSettings),
         ),
+        (
+            "Copy Verse with Citation".into(),
+            &["clipboard", "quote"],
+            Box::new(CopyVerse),
+        ),
+        ("Copy Chapter".into(), &["clipboard"], Box::new(CopyChapter)),
         (
             "Toggle Sidebar".into(),
             &["books", "navigator"],

@@ -27,12 +27,46 @@ use crate::palette::{
 use crate::tabs::{Location, Tab};
 use crate::translation_picker::TranslationItem;
 use crate::{
-    ClosePalette, CloseTab, DecreaseFont, FocusReader, FocusSidebar, GoBack, GoForward,
-    IncreaseFont, NewTab, NextChapter, NextTab, OpenCommands, OpenInNewTab, OpenPalette,
-    PrevChapter, PrevTab, ReopenClosedTab, ResetFont, SelectTranslation, SetAppearance,
-    SidebarDown, SidebarLeft, SidebarNextBook, SidebarOpen, SidebarPrevBook, SidebarRight,
-    SidebarUp, ToggleInspector, ToggleRedLetter, ToggleSidebar, ToggleVerseNumbers,
+    ClosePalette, CloseTab, CopyChapter, CopyVerse, DecreaseFont, FocusReader, FocusSidebar,
+    GoBack, GoForward, IncreaseFont, NewTab, NextChapter, NextTab, OpenCommands, OpenInNewTab,
+    OpenPalette, PrevChapter, PrevTab, ReopenClosedTab, ResetFont, SelectTranslation,
+    SetAppearance, SidebarDown, SidebarLeft, SidebarNextBook, SidebarOpen, SidebarPrevBook,
+    SidebarRight, SidebarUp, ToggleInspector, ToggleRedLetter, ToggleSidebar, ToggleVerseNumbers,
 };
+
+/// Verse (or whole chapter) text with a citation and, for translations that
+/// aren't public domain, the copyright notice.
+fn copy_text(cx: &App, chapter: ChapterRef, verse: Option<VerseId>) -> Option<String> {
+    let translation = current_translation(cx);
+    let (body, reference) = match verse {
+        Some(id) => (translation.verse_text(id).ok()??, id.to_string()),
+        None => {
+            let mut lines = Vec::new();
+            for v in 1u16.. {
+                match translation.verse_text(VerseId::new(chapter.book, chapter.chapter, v)) {
+                    Ok(Some(t)) => lines.push(format!("{v} {t}")),
+                    _ => break,
+                }
+            }
+            if lines.is_empty() {
+                return None;
+            }
+            (lines.join("\n"), chapter.to_string())
+        }
+    };
+    let abbrev = &translation.info.abbrev;
+    let mut out = if verse.is_some() {
+        format!("“{body}” — {reference} ({abbrev})")
+    } else {
+        format!("{body}\n— {reference} ({abbrev})")
+    };
+    let notice = translation.info.copyright.trim();
+    if !notice.is_empty() && !notice.to_lowercase().contains("public domain") {
+        out.push('\n');
+        out.push_str(notice);
+    }
+    Some(out)
+}
 
 const TOOLBAR_HEIGHT: f32 = 44.;
 const CLOSED_TABS_KEPT: usize = 20;
@@ -250,6 +284,14 @@ impl ReaderView {
     pub fn go_to(&mut self, chapter: ChapterRef, verse: Option<VerseId>, cx: &mut Context<Self>) {
         self.tabs[self.active].navigate(Location { chapter, verse });
         self.show_active(cx);
+        self.scroll_to_top_if_no_verse(verse);
+    }
+
+    /// A fresh chapter opens at its title; show_active already scrolls to a verse.
+    fn scroll_to_top_if_no_verse(&self, verse: Option<VerseId>) {
+        if verse.is_none() {
+            self.tab().scroll.scroll_to_top_of_item(0);
+        }
     }
 
     /// Point the translation dropdown at the active tab's translation. Runs
@@ -284,6 +326,7 @@ impl ReaderView {
             verse: action.verse,
         });
         self.show_active(cx);
+        self.scroll_to_top_if_no_verse(action.verse);
     }
 
     fn next_chapter(&mut self, _: &NextChapter, window: &mut Window, cx: &mut Context<Self>) {
@@ -542,6 +585,24 @@ impl ReaderView {
         self.renaming = None;
         self.focus.focus(window, cx);
         cx.notify();
+    }
+
+    /// ⇧⌘C: copy the jumped-to verse (or verse 1) with its citation.
+    fn copy_verse(&mut self, _: &CopyVerse, _: &mut Window, cx: &mut Context<Self>) {
+        let chapter = self.chapter();
+        let verse = self
+            .target()
+            .unwrap_or(VerseId::new(chapter.book, chapter.chapter, 1));
+        if let Some(text) = copy_text(cx, chapter, Some(verse)) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// ⌥⌘C: copy the whole chapter with its citation.
+    fn copy_chapter(&mut self, _: &CopyChapter, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = copy_text(cx, self.chapter(), None) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
     }
 
     /// ⌘Enter: open the highlighted passage in a new tab. Other rows run as usual.
@@ -950,13 +1011,25 @@ impl ReaderView {
             .child(list)
     }
 
-    fn render_chapter(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chapter(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let settings = cx.global::<Settings>();
         let dark = theme.mode.is_dark();
         let font_size = settings.font_size;
         let line_height = settings.line_height;
-        let reading_width = px(settings.reading_width);
+        // The column scales with font size (so bigger text keeps its characters
+        // per line) and widens at breakpoints when the window has room.
+        let viewport = f32::from(window.viewport_size().width);
+        let available = viewport
+            - if settings.sidebar_open { 230. } else { 0. }
+            - if self.inspector_open { 280. } else { 0. };
+        let breakpoint = match available {
+            a if a >= 1500. => 1.5,
+            a if a >= 1100. => 1.25,
+            _ => 1.,
+        };
+        let wanted = settings.reading_width * (settings.font_size / 19.).max(1.) * breakpoint;
+        let reading_width = px(wanted.min(available.max(320.)));
         let reading_font = SharedString::from(settings.reading_font.clone());
         let palette = Palette {
             verse_number: theme.muted_foreground,
@@ -1005,7 +1078,7 @@ impl ReaderView {
             div()
                 .w_full()
                 .max_w(reading_width)
-                .px_8()
+                .px_6()
                 .pt_4()
                 .pb_4()
                 .text_center()
@@ -1096,6 +1169,8 @@ impl ReaderView {
                 let runs = chapter_view::build_runs(&rendered, &block_style);
                 StyledText::new(rendered.text.clone()).with_runs(runs)
             };
+            let text_layout = styled.layout().clone();
+            let plain = rendered.text.clone();
             let entity = cx.entity().downgrade();
             let text = InteractiveText::new(("block", ix), styled)
                 .on_click(ranges, move |range_ix, _, cx| {
@@ -1117,8 +1192,15 @@ impl ReaderView {
                             .build(window, cx),
                     )
                 });
+            let text = crate::selectable::SelectableBlock::new(
+                ("select", ix),
+                ix as u64,
+                plain.into(),
+                text_layout,
+                text,
+            );
 
-            let base = div().w_full().max_w(reading_width).px_8();
+            let base = div().w_full().max_w(reading_width).px_6();
             let el = match &block.kind {
                 BlockKind::MajorHeading => base
                     .pt_6()
@@ -1185,7 +1267,7 @@ impl ReaderView {
             div()
                 .w_full()
                 .max_w(reading_width)
-                .px_8()
+                .px_6()
                 .pt_10()
                 .pb_16()
                 .flex()
@@ -1295,14 +1377,29 @@ impl ReaderView {
             .bg(theme.sidebar)
             .child(
                 div()
-                    .px_3()
-                    .py_2()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .pl_3()
+                    .pr_2()
+                    .py_1()
                     .text_xs()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.muted_foreground)
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(format!("NOTES · {}", translation.info.abbrev)),
+                    .child(format!("NOTES · {}", translation.info.abbrev))
+                    .child(
+                        Button::new("close-notes")
+                            .icon(IconName::Close)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Close notes (⌥⌘N)")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.inspector_open = false;
+                                cx.notify();
+                            })),
+                    ),
             )
             .child(list)
     }
@@ -1682,6 +1779,8 @@ impl Render for ReaderView {
             .on_action(cx.listener(Self::rename_tab))
             .on_action(cx.listener(Self::close_tab_action))
             .on_action(cx.listener(Self::open_in_new_tab))
+            .on_action(cx.listener(Self::copy_verse))
+            .on_action(cx.listener(Self::copy_chapter))
             .on_action(cx.listener(Self::search_in))
             .on_action(cx.listener(Self::focus_sidebar))
             .on_action(cx.listener(|this, _: &IncreaseFont, _, cx| {
@@ -1726,7 +1825,7 @@ impl Render for ReaderView {
                     .flex_1()
                     .min_h_0()
                     .when(sidebar_open, |d| d.child(self.render_sidebar(window, cx)))
-                    .child(self.render_chapter(cx))
+                    .child(self.render_chapter(window, cx))
                     .when(self.inspector_open, |d| d.child(self.render_inspector(cx))),
             )
             .when(self.palette_open, |d| d.child(self.render_palette(cx)))
@@ -1830,6 +1929,46 @@ mod tests {
             assert_eq!(v.chapter().to_string(), "John 3");
             assert_eq!(v.target(), Some(VerseId::new(43, 3, 16)));
         });
+    }
+
+    #[gpui_kit::test]
+    fn copy_verse_and_chapter_put_citation_on_clipboard(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        with_window(window, cx, |window, cx| {
+            window.press("cmd-k", cx);
+        });
+        with_window(window, cx, |window, cx| window.input("jn 3:16", cx));
+        with_window(window, cx, |window, cx| window.press("enter", cx));
+        with_window(window, cx, |window, cx| window.press("cmd-shift-c", cx));
+        let verse = cx.read_from_clipboard().and_then(|c| c.text()).unwrap();
+        assert!(verse.starts_with('“'), "{verse}");
+        assert!(verse.contains("John 3:16 (BSB)"), "{verse}");
+        assert!(verse.contains("eternal life"), "{verse}");
+
+        with_window(window, cx, |window, cx| window.press("cmd-alt-c", cx));
+        let chapter = cx.read_from_clipboard().and_then(|c| c.text()).unwrap();
+        assert!(chapter.starts_with("1 "), "{chapter}");
+        assert!(chapter.contains("\n16 "), "{chapter}");
+        assert!(chapter.ends_with("John 3 (BSB)"), "{chapter}");
+        view.read_with(cx, |v, _| assert_eq!(v.chapter().to_string(), "John 3"));
+    }
+
+    #[gpui_kit::test]
+    fn dragging_over_chapter_text_selects_it(cx: &mut TestAppContext) {
+        let Some((window, _view)) = open(cx) else {
+            return;
+        };
+        with_window(window, cx, |window, cx| {
+            window.render_frame(cx);
+            window.drag(point(px(600.), px(200.)), point(px(900.), px(500.)), cx);
+        });
+        let mut selected = String::new();
+        with_window(window, cx, |window, cx| {
+            selected = gpui_kit::base::TextSelection::selected_text(window, cx);
+        });
+        assert!(selected.contains("In the beginning"), "got {selected:?}");
     }
 
     #[gpui_kit::test]

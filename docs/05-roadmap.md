@@ -29,7 +29,7 @@ Also done 2026-10-06: settings window (⌘,), footnote hover popovers, sidebar a
 ## Phase 2: Search + annotations (2 wk). Search done; annotations deferred with verse selection
 - FTS5 search with filters, result list, jump to verse.
 - Highlights, bookmarks, notes in `user.db`. Inspector pane.
-- Copy with citation (with version notice).
+- Copy with citation (with version notice). Done 2026-10-06: ⇧⌘C verse, ⌥⌘C chapter, drag-select + ⌘C.
 
 ## Phase 3: Parallel (1 to 2 wk). Compare popover cut from MVP
 - Compare popover for a verse across versions.

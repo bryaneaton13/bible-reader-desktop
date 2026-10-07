@@ -14,6 +14,7 @@ crates/
   app/           GPUI app (binary `bible-reader`)
     main.rs         actions, key bindings, app menus, window, `screenshot` dev feature
     reader.rs       ReaderView: title-bar toolbar, tab bar, sidebar, chapter, notes panel, palette host; headless UI tests
+    selectable.rs  SelectableBlock: wraps a chapter block's InteractiveText so Root's text selection (drag, ⌘C) works with styled runs
     tabs.rs         Tab (location, translation, back/forward, scroll) + save/restore; unit tests
     settings_window.rs  Settings window (⌘,): font, size, line spacing, width, theme; gpui-kit `setting`
     palette.rs      ⌘K palette rows (Go to / Tabs / Recent / Commands / Verses), each carrying its Action; unit tests
@@ -157,4 +158,4 @@ Live capture and synthetic input (`osascript ... keystroke`, `cliclick`) need Sc
 
 ## Keyboard map (keep README in sync)
 
-⌘K / ⌘P / ⌘L / ⌘F palette · ⇧⌘P commands · ⌘T new tab · ⌘W close tab (last tab closes the window) · ⇧⌘T reopen closed tab · ⌃Tab / ⌃⇧Tab or ⇧⌘] / ⇧⌘[ next/previous tab · ⇧⌘W close window · ← → / ⌘[ ⌘] / ⌥← ⌥→ prev/next chapter · ⌘Enter in palette: open in new tab · `in:nt` / `in:john` scopes a palette search · ⌘, settings · ⌘B sidebar · ⌥⌘B focus sidebar (arrows move, Enter opens, ⌥↑↓ book, Esc back) · ⌃⌘← ⌃⌘→ back/forward · ⌘1–3 translation · ⌘+ ⌘− ⌘0 text size · ⌃⌘S sidebar · ⌥⌘N notes · ⇧⌘L dark/light · View ▸ Theme for Sepia / System.
+⌘K / ⌘P / ⌘L / ⌘F palette · ⇧⌘P commands · ⌘T new tab · ⌘W close tab (last tab closes the window) · ⇧⌘T reopen closed tab · ⌃Tab / ⌃⇧Tab or ⇧⌘] / ⇧⌘[ next/previous tab · ⇧⌘W close window · ← → / ⌘[ ⌘] / ⌥← ⌥→ prev/next chapter · ⌘Enter in palette: open in new tab · `in:nt` / `in:john` scopes a palette search · ⌘, settings · ⌘B sidebar · ⌥⌘B focus sidebar (arrows move, Enter opens, ⌥↑↓ book, Esc back) · ⌃⌘← ⌃⌘→ back/forward · ⌘1–3 translation · ⌘+ ⌘− ⌘0 text size · ⌃⌘S sidebar · ⌥⌘N notes · drag to select text, ⌘C copy · ⇧⌘C copy verse with citation · ⌥⌘C copy chapter · ⇧⌘L dark/light · View ▸ Theme for Sepia / System.

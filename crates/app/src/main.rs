@@ -3,6 +3,7 @@ mod chapter_view;
 mod library;
 mod palette;
 mod reader;
+mod selectable;
 mod settings_window;
 mod tabs;
 mod translation_picker;
@@ -24,6 +25,8 @@ actions!(
         OpenReader,
         OpenVerseOfTheDay,
         CopyVerseOfTheDay,
+        CopyVerse,
+        CopyChapter,
         NextChapter,
         PrevChapter,
         GoBack,
@@ -128,6 +131,11 @@ fn main() {
                     MenuItem::separator(),
                     MenuItem::action("Close Tab", CloseTab),
                     MenuItem::action("Close Window", CloseWindow),
+                ]),
+                Menu::new("Edit").items([
+                    MenuItem::action("Copy", gpui_kit::base::input::Copy),
+                    MenuItem::action("Copy Verse with Citation", CopyVerse),
+                    MenuItem::action("Copy Chapter", CopyChapter),
                 ]),
                 Menu::new("Go").items([
                     MenuItem::action("Go to Passage or Search…", OpenPalette),
@@ -285,6 +293,8 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-ctrl-s", ToggleSidebar, Some("Reader")),
         KeyBinding::new("cmd-alt-n", ToggleInspector, Some("Reader")),
         KeyBinding::new("cmd-shift-l", ToggleDark, Some("Reader")),
+        KeyBinding::new("cmd-shift-c", CopyVerse, Some("Reader")),
+        KeyBinding::new("cmd-alt-c", CopyChapter, Some("Reader")),
         KeyBinding::new("cmd-1", SelectTranslation { index: 0 }, Some("Reader")),
         KeyBinding::new("cmd-2", SelectTranslation { index: 1 }, Some("Reader")),
         KeyBinding::new("cmd-3", SelectTranslation { index: 2 }, Some("Reader")),
