@@ -6,6 +6,7 @@
 //! build only that.
 
 mod study;
+mod topical;
 mod usfm;
 
 use std::path::{Path, PathBuf};
@@ -50,8 +51,7 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&out_dir)?;
 
     if only.is_empty() || only.iter().any(|a| a == "STUDY") {
-        study::import(&sources_dir.join("openbible"), &out_dir.join("study.db"))
-            .context("importing study data")?;
+        study::import(&sources_dir, &out_dir.join("study.db")).context("importing study data")?;
     }
     for source in SOURCES {
         if !only.is_empty() && !only.iter().any(|a| a == source.abbrev) {

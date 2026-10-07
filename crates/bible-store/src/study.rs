@@ -192,6 +192,12 @@ pub struct Study {
     pub attribution: String,
 }
 
+/// Whether a (lowercase) word is question framing, not part of a subject.
+pub fn is_framing(word: &str) -> bool {
+    let stemmed = stem(word);
+    QUESTION_WORDS.iter().any(|f| stem(f) == stemmed)
+}
+
 /// Words that make a query a question ("what does the bible say about X")
 /// rather than part of a topic's name.
 const QUESTION_WORDS: &[&str] = &[

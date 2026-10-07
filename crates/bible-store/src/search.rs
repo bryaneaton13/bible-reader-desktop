@@ -9,7 +9,7 @@ use std::ops::RangeInclusive;
 use bible_core::VerseId;
 use bible_core::text::{is_stop_word, words};
 
-use crate::study::{BOOST_STRENGTH, Study, TopicMatch};
+use crate::study::{BOOST_STRENGTH, Study, TopicMatch, is_framing};
 use crate::{SearchHit, Translation};
 
 /// How several words in a query combine.
@@ -186,7 +186,7 @@ pub fn search(
     study: Option<&Study>,
     request: &SearchRequest,
 ) -> Results {
-    let parsed = ParsedQuery::parse(request.query);
+    let mut parsed = ParsedQuery::parse(request.query);
     let mut results = Results::default();
     if parsed.terms.is_empty() {
         return results;
@@ -199,6 +199,16 @@ pub fn search(
         && request.mode != MatchMode::Phrase
     {
         results.topics = study.topics(&topic_query, 5);
+    }
+    // "what does the bible say about alcohol": once a topic claims the
+    // subject, the framing words shouldn't have to appear in the verse.
+    if results.topics.iter().any(|t| t.strength >= BOOST_STRENGTH)
+        && parsed
+            .terms
+            .iter()
+            .any(|t| t.len() > 1 || !is_framing(&t[0]))
+    {
+        parsed.terms.retain(|t| t.len() > 1 || !is_framing(&t[0]));
     }
     let strong: Vec<&TopicMatch> = results
         .topics

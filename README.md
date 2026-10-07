@@ -86,7 +86,8 @@ crates/
   app/           GPUI app: reader window, tabs, ⌘K palette, notes panel, menu bar item (gpui-tray)
 data/
   sources/       USFM inputs
-  openbible/     topics + cross-references (CC-BY, openbible.info)
+  openbible/     topics + cross-references (CC-BY, openbible.info), aliases.txt, drop.txt
+  topical/       Nave's + Torrey's topical Bibles (public domain, CCEL)
   build/         generated .sqlite / study.db (gitignored)
 scripts/         shot.sh (offscreen screenshot), bundle.sh (.app), make-icon.swift
 assets/          AppIcon.icns
