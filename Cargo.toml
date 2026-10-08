@@ -17,3 +17,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 gpui-kit = "=0.7.1"
+
+# gpui-tray 0.1.4 with a macOS patch: tray icons are @2x template images
+# (vendor/gpui-tray/src/backend/macos.rs, `native_image`).
+[patch.crates-io]
+gpui-tray = { path = "vendor/gpui-tray" }

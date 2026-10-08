@@ -93,28 +93,29 @@ fn build_menu(cx: &mut App) -> Vec<MenuItem> {
     items
 }
 
-/// 22pt open-book glyph drawn in code (2x for Retina), anti-aliased by 4x4
-/// supersampling. White, since the menu bar is dark in practice; gpui-tray has
-/// no template-image option to adapt it to a light bar.
+/// Closed Bible with a cross, outlined: 44px drawn as a 22pt @2x template
+/// image (the vendored gpui-tray patch), so macOS tints it for the menu bar.
+/// The book is 11x16pt with 1.5pt strokes on whole pixels so it stays crisp;
+/// 4x4 supersampling only softens the rounded corners.
 fn book_icon() -> gpui_tray::Result<Icon> {
     const SIZE: u32 = 44;
     const SS: u32 = 4;
-    // Coordinates are 0..1 across the icon. Each page's top edge dips toward the
-    // spine and the bottom edge follows it; text lines are cut out of the page.
+    // Pixel coordinates: a rounded cover outline, a spine on the left, the page
+    // edge along the bottom and a solid cross on the cover.
     fn inside(x: f32, y: f32) -> bool {
-        let x = if x > 0.5 { 1.0 - x } else { x };
-        if !(0.07..=0.475).contains(&x) {
-            return false;
+        const STROKE: f32 = 3.0;
+        let (l, r, t, b, rad) = (11.0, 33.0, 6.0, 38.0, 4.5);
+        let qx = (x - (l + r) / 2.0).abs() - ((r - l) / 2.0 - rad);
+        let qy = (y - (t + b) / 2.0).abs() - ((b - t) / 2.0 - rad);
+        let cover = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - rad;
+        if (-STROKE..=0.0).contains(&cover) {
+            return true;
         }
-        let t = (x - 0.07) / 0.405;
-        let top = 0.20 + 0.10 * t * t;
-        let bottom = top + 0.54;
-        if !(top..=bottom).contains(&y) {
-            return false;
-        }
-        let in_lines = (0.17..=0.40).contains(&x);
-        let cut = (1..=3).any(|k| (y - (top + 0.12 * k as f32 + 0.02)).abs() < 0.018);
-        !(in_lines && cut)
+        let spine = (16.0..19.0).contains(&x) && y < 32.0;
+        let pages = (29.0..32.0).contains(&y) && x >= 16.0;
+        let cross = ((23.0..26.0).contains(&x) && (12.0..26.0).contains(&y))
+            || ((20.0..29.0).contains(&x) && (15.0..18.0).contains(&y));
+        cover < 0.0 && (spine || pages || cross)
     }
     let mut rgba = vec![0_u8; (SIZE * SIZE * 4) as usize];
     for py in 0..SIZE {
@@ -122,10 +123,9 @@ fn book_icon() -> gpui_tray::Result<Icon> {
             let mut hits = 0;
             for sy in 0..SS {
                 for sx in 0..SS {
-                    let x = (px * SS + sx) as f32 + 0.5;
-                    let y = (py * SS + sy) as f32 + 0.5;
-                    let scale = (SIZE * SS) as f32;
-                    hits += inside(x / scale, y / scale) as u32;
+                    let x = px as f32 + (sx as f32 + 0.5) / SS as f32;
+                    let y = py as f32 + (sy as f32 + 0.5) / SS as f32;
+                    hits += inside(x, y) as u32;
                 }
             }
             let o = ((py * SIZE + px) * 4) as usize;

@@ -998,6 +998,7 @@ impl ReaderView {
             .flex()
             .items_center()
             .gap_1()
+            .child(crate::app_icon::app_icon(26.).mr_1())
             .child(
                 icon_button("sidebar", IconName::PanelLeft, "Toggle sidebar (⌃⌘S)")
                     .selected(sidebar_open)

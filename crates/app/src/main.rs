@@ -1,3 +1,4 @@
+mod app_icon;
 mod appearance;
 mod chapter_view;
 mod fonts;

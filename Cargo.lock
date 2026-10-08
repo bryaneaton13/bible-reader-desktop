@@ -2933,8 +2933,6 @@ checksum = "d337c9acf058238e45ce0570d8a5958439242889492f91ae2d8e324211a61ccd"
 [[package]]
 name = "gpui-tray"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c01af03fe16178c6051e7611ae1699d4d6d5b537d579e38aea7efeec0af2a433"
 dependencies = [
  "async-channel",
  "gpui-pre",

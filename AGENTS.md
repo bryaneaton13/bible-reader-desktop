@@ -18,7 +18,7 @@ crates/
     tabs.rs         Tab (location, translation, back/forward, scroll, optional `side` pane for split view) + save/restore; unit tests
     keymap.rs       key bindings (`bind`) + `SECTIONS`, the catalog the Shortcuts window shows; a test keeps them in sync
     shortcuts_window.rs  Keyboard Shortcuts window (⌘/, Help menu, palette)
-    settings_window.rs  Settings window (⌘,): font, size, line spacing, width, theme; gpui-kit `setting`
+    settings_window.rs  Settings window (⌘,): font, size, line spacing, width, theme, About (credits with clickable links, Built with); gpui-kit `setting`
     palette.rs      ⌘K palette rows (Go to / Tabs / Recent / Try searching / Commands / Topics / Verses), each carrying its Action; unit tests
     search_page.rs  search results page (⇧⌘F; child module of reader.rs): filters, key passages for a topic, ranked matches with highlights, related verses, open here / new tab / beside
     suggestions.rs  rotating suggested searches; a test checks each returns good results
@@ -26,12 +26,13 @@ crates/
     chapter_view.rs Block -> styled text runs (verse numbers, red letter, notes, jump highlight); unit tests
     fonts.rs        bundled typefaces (assets/fonts/*.ttf, OFL) registered at startup for the font pairings
     library.rs      Library (open translations), Settings (persisted JSON: tabs, recents, appearance), data_dir()
+    app_icon.rs     the app icon (assets/AppIcon-{64,256}.png) as an image: toolbar, Settings sidebar badge and About page
     appearance.rs   applies System / Light / Sepia / Dark to gpui-kit's Theme
-    tray.rs         menu bar item (gpui-tray)
+    tray.rs         menu bar item (gpui-tray, vendored in vendor/gpui-tray with a macOS patch)
 scripts/
   shot.sh        offscreen screenshot of the UI -> PNG (the main visual check)
   bundle.sh      build "dist/Bible Reader.app"; --install copies to ~/Applications and opens it
-  make-icon.swift  regenerates assets/AppIcon.icns
+  make-icon.swift  draws the app icon: an .iconset for assets/AppIcon.icns, plus assets/AppIcon-{64,256}.png
 data/sources/    USFM inputs (committed)    data/build/  generated .sqlite (gitignored)
 ```
 
@@ -157,6 +158,7 @@ Live capture and synthetic input (`osascript ... keystroke`, `cliclick`) need Sc
 - **Split view:** a split is one tab with two panes. `Tab.side: Option<Box<Tab>>` is the right pane (a `Tab` reused for its location, translation, history and scroll); `focus_side` says which pane navigation applies to. `ReaderView::tab()` / `tab_mut()` return the *focused* pane, so sidebar, ⌘K, ⌘[ ⌘], ⌘1–3 and the notes panel just work on it. Chapter text lives in `ReaderView.content` keyed by pane id, loaded in `show_active` (focused pane, plus the other pane if missing). `Settings.translation` mirrors the focused pane. Clicking or selecting text in a pane focuses it (capture-phase mouse down on the pane frame). Each pane header has its own translation `Select` (`translation_select` left, `side_select` right); the toolbar one only shows when not split. Below `SPLIT_MIN_WIDTH` (760pt of content) only the focused pane shows, with a switcher row. Only two panes, and a split tab can't be dropped into another.
 
 - **Fonts:** `Settings.font_pairing` (`library::FontPairing`) picks body, display (titles, headings) and verse-number families. Bundled fonts are static Regular/Bold/Italic TTFs, subset to Latin, and `include_bytes!`'d in `fonts.rs`. Variable fonts don't pick weights on GPUI/macOS, so re-cut new ones with fonttools `varLib.instancer`, then fix the name table so each family is a plain Regular/Bold/Italic set. Verse numbers use `sups`; Lora and Outfit lack superscript digits 0 and 5-9, hence `FontPairing::numbers()`.
+- **Tray icon:** `vendor/gpui-tray` is gpui-tray 0.1.4 patched via `[patch.crates-io]`: on macOS, `native_image` sizes icons at half their pixel size (@2x) and marks them template images. Without it a 44px icon shows at 44pt, clipped and blurry. Draw the icon at 44px with only alpha mattering, and keep strokes on whole pixels.
 - **Icons:** `gpui_kit::application()` does not register assets. `main.rs` calls `.with_assets(gpui_kit::assets::Assets)`. Without it, every `IconName` renders blank. Only about 100 default Lucide icons are embedded; see `default-icons.txt` in `gpui-kit-assets`.
 - **Themes:** `Theme::change(mode)` reloads the registered light or dark theme. Sepia is Light plus a `Theme::update` overlay (`appearance.rs`). Re-apply after any `Theme::change`. `ReaderView` observes the window appearance, so `System` follows macOS.
 - **Actions from popup menus** (theme and text-size dropdowns) are handled at app level (`cx.on_action` in `main.rs`) or by the focused `Reader` context. App-level handlers work whatever has focus.

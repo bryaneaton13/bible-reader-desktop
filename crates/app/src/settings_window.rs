@@ -5,15 +5,103 @@
 
 use gpui_kit::base::Root;
 use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::link::Link;
 use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage,
     Settings as SettingsPanel,
 };
 use gpui_kit::*;
 
+use crate::app_icon::app_icon;
 use crate::library::{
     Appearance, FONT_SIZE_RANGE, FontPairing, LINE_HEIGHT_RANGE, READING_WIDTH_RANGE, Settings,
 };
+
+const SIDEBAR_WIDTH: f32 = 180.;
+
+/// About ▸ Built with: (name, what it does here, link).
+const BUILT_WITH: &[(&str, &str, &str)] = &[
+    (
+        "Source code",
+        "Bible Reader is open source (MIT).",
+        env!("CARGO_PKG_REPOSITORY"),
+    ),
+    (
+        "GPUI",
+        "GPU-accelerated UI framework from Zed.",
+        "https://www.gpui.rs",
+    ),
+    (
+        "gpui-kit",
+        "UI components built on GPUI.",
+        "https://gpui-kit.com",
+    ),
+    (
+        "Rust",
+        "The language the app is written in.",
+        "https://www.rust-lang.org",
+    ),
+    (
+        "SQLite",
+        "Storage and full-text search.",
+        "https://sqlite.org",
+    ),
+];
+
+/// A URL without its scheme or `www.`, for display.
+fn display_url(url: &str) -> &str {
+    let url = url.split_once("://").map_or(url, |(_, rest)| rest);
+    url.strip_prefix("www.").unwrap_or(url)
+}
+
+/// Byte ranges of web addresses in `text`: words such as `ccel.org` or
+/// `www.openbible.info/labs/cross-references`, without surrounding punctuation.
+fn find_links(text: &str) -> Vec<std::ops::Range<usize>> {
+    const TLDS: &[&str] = &["org", "info", "com", "net", "io", "dev", "rs"];
+    let mut links = Vec::new();
+    let mut start = 0;
+    for word in text.split(char::is_whitespace) {
+        let trimmed = word.trim_start_matches(['(', '"', '\'']);
+        let lead = word.len() - trimmed.len();
+        let trimmed = trimmed.trim_end_matches(['.', ',', ';', ':', ')', '"', '\'']);
+        let host = display_url(trimmed).split('/').next().unwrap_or("");
+        let is_link = host.rsplit_once('.').is_some_and(|(name, tld)| {
+            !name.is_empty() && TLDS.contains(&tld.to_ascii_lowercase().as_str())
+        });
+        if is_link {
+            links.push(start + lead..start + lead + trimmed.len());
+        }
+        start += word.len() + 1;
+    }
+    links
+}
+
+/// `text` with every web address in it underlined and clickable.
+fn linked_text(id: impl Into<ElementId>, text: String, color: Hsla) -> impl IntoElement {
+    let links = find_links(&text);
+    let urls: Vec<String> = links
+        .iter()
+        .map(|r| {
+            let url = &text[r.clone()];
+            if url.contains("://") {
+                url.to_string()
+            } else {
+                format!("https://{url}")
+            }
+        })
+        .collect();
+    let style = HighlightStyle {
+        color: Some(color),
+        underline: Some(UnderlineStyle {
+            thickness: px(1.),
+            color: Some(color.opacity(0.5)),
+            wavy: false,
+        }),
+        ..Default::default()
+    };
+    let styled = StyledText::new(text).with_highlights(links.iter().map(|r| (r.clone(), style)));
+    InteractiveText::new(id, styled).on_click(links, move |ix, _, cx| cx.open_url(&urls[ix]))
+}
 
 /// The settings window, if open.
 pub struct SettingsWindow(pub Option<WindowHandle<Root>>);
@@ -192,6 +280,37 @@ fn pages() -> Vec<SettingPage> {
 
     let about = SettingPage::new("About")
         .description("Where the text and study data come from.")
+        .group(SettingGroup::new().item(SettingItem::render(|_, _, cx| {
+            div()
+                .flex()
+                .items_center()
+                .gap_4()
+                .child(app_icon(80.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xl()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Bible Reader"),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("An offline Bible reader for macOS."),
+                        ),
+                )
+        })))
         .group(
             SettingGroup::new()
                 .title("Credits")
@@ -205,13 +324,32 @@ fn pages() -> Vec<SettingPage> {
                     if let Some(study) = &library.study {
                         lines.push(study.attribution.clone());
                     }
+                    let link = cx.theme().link;
                     div()
                         .flex()
                         .flex_col()
                         .gap_2()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .children(lines)
+                        .children(
+                            lines
+                                .into_iter()
+                                .enumerate()
+                                .map(|(ix, line)| linked_text(("credit", ix), line, link)),
+                        )
+                })),
+        )
+        .group(
+            SettingGroup::new()
+                .title("Built with")
+                .items(BUILT_WITH.iter().map(|&(name, about, url)| {
+                    SettingItem::new(
+                        name,
+                        SettingField::render(move |_, _, _| {
+                            Link::new(name).href(url).text_sm().child(display_url(url))
+                        }),
+                    )
+                    .description(about)
                 })),
         );
 
@@ -219,10 +357,46 @@ fn pages() -> Vec<SettingPage> {
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        SettingsPanel::new("settings")
-            .sidebar_width(px(180.))
-            .pages(pages())
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The panel has no sidebar footer slot, so the app badge is laid over
+        // the bottom of the sidebar, under its three page rows.
+        div()
+            .relative()
+            .size_full()
+            .child(
+                SettingsPanel::new("settings")
+                    .sidebar_width(px(SIDEBAR_WIDTH))
+                    .pages(pages()),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .bottom_0()
+                    .w(px(SIDEBAR_WIDTH))
+                    .p_3()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(app_icon(32.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Bible Reader"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+                            ),
+                    ),
+            )
     }
 }
 
@@ -255,5 +429,37 @@ pub fn open(cx: &mut App) {
     match opened {
         Ok((handle, _)) => cx.set_global(SettingsWindow(handle.downcast::<Root>())),
         Err(err) => eprintln!("error: failed to open settings: {err:#}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    fn links(text: &str) -> Vec<&str> {
+        find_links(text).into_iter().map(|r| &text[r]).collect()
+    }
+
+    #[test]
+    fn finds_web_addresses_in_credits() {
+        assert_eq!(
+            links(
+                "licensed CC-BY 4.0 (www.openbible.info/labs/cross-references). Torrey's (public domain, ccel.org)."
+            ),
+            ["www.openbible.info/labs/cross-references", "ccel.org"]
+        );
+        assert_eq!(links("is a trademark of eBible.org."), ["eBible.org"]);
+        assert!(links("King James Version (1769). Public domain (outside the UK).").is_empty());
+        assert!(links("The Holy Bible, Berean Standard Bible, BSB.").is_empty());
+    }
+
+    #[test]
+    fn display_url_drops_scheme_and_www() {
+        assert_eq!(display_url("https://www.gpui.rs"), "gpui.rs");
+        assert_eq!(
+            display_url("https://github.com/bryaneaton13/bible-reader-desktop"),
+            "github.com/bryaneaton13/bible-reader-desktop"
+        );
     }
 }
