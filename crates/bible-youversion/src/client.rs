@@ -12,12 +12,19 @@ use url::Url;
 
 pub const DEFAULT_HOST: &str = "api.youversion.com";
 
+/// Pause before the first retry of a server error; later ones wait longer.
+const RETRY_PAUSE: Duration = Duration::from_millis(if cfg!(test) { 5 } else { 400 });
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// No app key is configured.
     MissingKey,
     /// 401 / 403: the key isn't licensed for this Bible or endpoint.
     NotPermitted,
+    /// 404: this Bible has no such passage (a missing book, say).
+    NotFound,
+    /// The Bible doesn't include this book (known without asking).
+    NotInBible(String),
     /// 429, with the server's `Retry-After` in seconds when given.
     RateLimited { retry_after: Option<u64> },
     /// The network or server could not be reached.
@@ -43,6 +50,8 @@ impl fmt::Display for Error {
                 f,
                 "YouVersion hasn't licensed this Bible to this app. Accept the publisher's license in the YouVersion Platform portal."
             ),
+            Error::NotFound => write!(f, "YouVersion doesn't have this passage in this Bible."),
+            Error::NotInBible(book) => write!(f, "This Bible doesn't include {book}."),
             Error::RateLimited {
                 retry_after: Some(secs),
             } => write!(
@@ -192,6 +201,7 @@ impl Client {
         match status {
             429 => Err(Error::RateLimited { retry_after }),
             401 | 403 => Err(Error::NotPermitted),
+            404 => Err(Error::NotFound),
             s if s >= 400 => Err(Error::Status(s)),
             _ => Ok(Raw {
                 location,
@@ -204,7 +214,24 @@ impl Client {
         self.inner.requests.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// GET, retrying server errors (5xx) twice with a short pause. The API
+    /// sometimes answers 500 ("Connection terminated to backend") for a
+    /// request that succeeds a moment later. Rate limits, license and
+    /// not-found answers are final and never retried.
     pub(crate) fn get(&self, path: &str, query: &[(&str, String)]) -> Result<String, Error> {
+        let mut attempt = 0u32;
+        loop {
+            match self.get_once(path, query) {
+                Err(Error::Status(code)) if code >= 500 && attempt < 2 => {
+                    std::thread::sleep(RETRY_PAUSE * 3u32.pow(attempt));
+                    attempt += 1;
+                }
+                other => return other,
+            }
+        }
+    }
+
+    fn get_once(&self, path: &str, query: &[(&str, String)]) -> Result<String, Error> {
         self.check_key()?;
         let url = self.url(path, query)?;
         let mut req = self

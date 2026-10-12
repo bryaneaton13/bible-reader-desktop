@@ -151,3 +151,22 @@ What saves requests instead:
 - **Deliberately not done:** speculative prefetch of the next chapter (it can only add requests; the cost is a skeleton for a moment on a first read), and `page_size=_` for the catalog (only allowed with 3 or fewer fields, which drops the copyright we must show).
 
 If request budget turns out to matter (the reported 200/hour until the app is live), the remaining lever is a deliberate "download this book" action that spends one request per chapter on purpose, with progress and a cap, rather than hidden prefetching. Not built.
+
+## 9. Verified against the live API (2026-10-11)
+
+With a real key (Bible Reader app, licensed: 11 public-domain Bibles, then NIV, NIrV and NIV UK after accepting Biblica's license).
+- **Chapter text is correct.** `examples/verify.rs` compares YouVersion's BSB (id 3034) and WEB (id 206) with the bundled copies, verse by verse, on 10 chapters chosen to stress the parser (Genesis 1, Psalm 23, Psalm 119 acrostic, Proverbs 1, Matthew 5, John 3, Romans 8, Obadiah, 3 John, Revelation 22): every verse matches word for word. Headings, poetry levels, psalm titles, acrostic labels, red letter (`wj`), footnotes and cross-references all come through. Counts line up (e.g. Psalm 119: 176 verses, 45 headings/labels).
+- **Markup:** the classes seen are exactly the ones the parser expects (`p q1 q2 qa qr d s1 s2 m cl yv-h yv-v yv-vlbl yv-n f x fr ft fqa wj nd add ref rq sc bd sup va`). Headings are `s1 yv-h` (a modifier class on the same div). `va` (alternate verse numbers) was leaking into the text of the Orthodox Jewish Bible; fixed.
+- **No red letter in the YouVersion BSB** (no `wj` in its markup): that is the data, not a parser bug. NIV, NIV UK and WEB have it.
+- **IDs differ by endpoint:** the Bible list gives `id` as a number, the single-Bible endpoint as a string. Handled.
+- **Copyright is only on the single-Bible endpoint** (`GET /v1/bibles/{id}`); the list returns `null`. Without that call the NIV would have shown no notice. The app now fetches it when you add a Bible and keeps it at most a day.
+- **Some Bibles are partial** (TCENT is 27 books: Genesis answers 404). The Bible's `books` list is saved so the pane says so without a request.
+- **Intermittent 500s:** `GET .../NIrV/PSA.117` once answered 500 "Connection terminated to backend" and succeeded on retry; the client now retries 5xx twice.
+- **Server cache header:** passage responses carry `cache-control: public, max-age=86400` (one day). No rate-limit headers.
+
+### Biblica license: what it requires, and open decisions for you
+Terms (a Google Doc linked from `GET /v1/licenses`, license id 2, 69 Bibles including the NIV family): display the API's copyright and trademark notice with any use; a one-step link containing "Biblica" every time the text is displayed; footnotes included and accessible; no alterations; no more than two chapters or 25 verses displayed at once per user; free to all users, no gathering personal data for commercial use; content only in the form provided; "appropriate and effective industry standard encryption measures" against reproduction; takedown within 72 hours on termination; the license auto-terminates with the YouVersion SDK license. Implemented: notice, Biblica link, footnotes in the notes panel, the 2-chapter / 25-verse ceiling. **Not decided, needs you:**
+1. **30-day cache vs the license.** The "Electronic Rights" are defined as non-downloadable for websites and downloadable for *mobile software applications*; a macOS desktop app is neither, and the API itself says `max-age=86400`. Storing licensed text for 30 days may be outside what Biblica granted. Recommendation: keep 30 days for public-domain Bibles (license 1) but cap licensed Bibles (NIV, ...) at 1 day; or ask YouVersion support in writing.
+2. **Plain-text cache on disk vs the encryption clause.** The cache is readable JSON in Application Support. Recommendation: encrypt cache files with a key in the Keychain (AES-GCM) before relying on the NIV, or ask whether the clause applies to a cache.
+3. **Copy.** ⇧⌘C / ⌥⌘C copy whole chapters to the clipboard with the notice. Biblica caps display, not copying, but a chapter copy of the NIV may be more than they intend. Recommendation: cap NIV copies at 25 verses.
+4. **Termination (72 hours)** is satisfied only if cached text expires quickly: another reason for decision 1.

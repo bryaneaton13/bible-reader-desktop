@@ -356,7 +356,9 @@ impl Builder {
                 self.verse(&v);
             }
             Frame::Other
-        } else if tag == "span" && (has("yv-vlbl") || has("vlbl")) {
+        } else if tag == "span" && (has("yv-vlbl") || has("vlbl") || has("va") || has("vp")) {
+            // The printed verse number, or an alternate one ("va", "vp"): the
+            // app draws its own.
             self.skip += 1;
             Frame::Skip
         } else if tag == "span" && has("yv-n") {
@@ -604,6 +606,21 @@ mod tests {
         );
         assert_eq!(c.blocks[0].spans[0], Span::Verse { num: 1, end: None });
         assert_eq!(c.blocks[2].spans[0], Span::Verse { num: 2, end: None });
+    }
+
+    #[test]
+    fn alternate_verse_numbers_are_not_part_of_the_text() {
+        let html = r#"<div class="q"><span class="va">1</span> <span class="nd">Hashem</span> is my Ro'eh;</div>"#;
+        let c = parse_chapter(html, ChapterRef::new(19, 23));
+        let text: String = c.blocks[0]
+            .spans
+            .iter()
+            .filter_map(|s| match s {
+                Span::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "Hashem is my Ro'eh;");
     }
 
     #[test]

@@ -18,3 +18,6 @@ getrandom = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
+
+[dev-dependencies]
+bible-store.workspace = true

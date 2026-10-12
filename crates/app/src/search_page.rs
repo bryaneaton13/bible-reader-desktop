@@ -26,6 +26,9 @@ const RELATED_SHOWN: usize = 6;
 const SUGGESTIONS_SHOWN: usize = 8;
 /// Verses per YouVersion search page. Each one costs a request for its text.
 const YV_PAGE: u32 = 6;
+/// Most YouVersion verses shown at once: a publisher license (Biblica's) allows
+/// two chapters or 25 verses on screen, whichever is greater.
+const YV_MAX_SHOWN: usize = 25;
 
 /// A verse found by YouVersion's search, with its text.
 pub(super) struct YvEntry {
@@ -372,6 +375,11 @@ impl ReaderView {
         } else {
             None
         };
+        let shown = if more { page.yv.entries.len() } else { 0 };
+        let room = YV_MAX_SHOWN.saturating_sub(shown).min(YV_PAGE as usize);
+        if room == 0 {
+            return;
+        }
         let search_query = query.clone();
         let Some(task) = remote::request(cx, move |source| {
             let before = source.client().requests_made();
@@ -380,7 +388,7 @@ impl ReaderView {
             // Verse text comes from whole chapters: results in the same chapter
             // share one request, cached chapters cost nothing, and opening a
             // result afterwards is instant.
-            for verse in found.value.verses.iter().copied().take(YV_PAGE as usize) {
+            for verse in found.value.verses.iter().copied().take(room) {
                 let text = match source.chapter(bible, verse.chapter_ref()) {
                     Ok(fetched) => bible_youversion::verse_texts(&fetched.value.blocks)
                         .into_iter()
@@ -675,16 +683,19 @@ impl ReaderView {
                                     )
                                 }),
                         )
-                        .when(page.yv.next_token.is_some(), |d| {
-                            d.child(
-                                Button::new("sp-yv-more")
-                                    .label("More results")
-                                    .xsmall()
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.search_yv(true, cx)),
-                                    ),
-                            )
-                        }),
+                        .when(
+                            page.yv.next_token.is_some() && page.yv.entries.len() < YV_MAX_SHOWN,
+                            |d| {
+                                d.child(
+                                    Button::new("sp-yv-more")
+                                        .label("More results")
+                                        .xsmall()
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.search_yv(true, cx)),
+                                        ),
+                                )
+                            },
+                        ),
                 );
             }
         }

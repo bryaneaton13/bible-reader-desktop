@@ -335,12 +335,17 @@ fn add_bible(cx: &mut App, bible: &BibleInfo) {
             .unwrap_or_default()
             .trim()
             .to_string(),
+        books: bible.books.clone(),
+        publisher: String::new(),
+        publisher_url: bible.publisher_url.clone().unwrap_or_default(),
     };
     update_settings(cx, |s| {
         if !s.youversion.bibles.iter().any(|b| b.id == saved.id) {
             s.youversion.bibles.push(saved);
         }
     });
+    // The list has no copyright notice: fetch it (and the publisher) now.
+    remote::refresh_saved(cx);
 }
 
 fn remove_bible(cx: &mut App, id: u32) {

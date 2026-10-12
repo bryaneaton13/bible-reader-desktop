@@ -154,6 +154,7 @@ pub fn init(cx: &mut App) {
         .then(auth::store::load)
         .flatten();
     cx.set_global(Remote::build(&settings, session));
+    refresh_saved(cx);
     // Drop anything past the 30-day window.
     let cache = Cache::new(cache_dir());
     cx.background_executor()
@@ -213,6 +214,70 @@ fn update(cx: &mut App, f: impl FnOnce(&mut Remote)) {
     if cx.try_global::<Remote>().is_some() {
         cx.update_global::<Remote, _>(|r, _| f(r));
     }
+}
+
+// MARK: Notices
+
+/// Bring each added Bible's copyright notice, publisher link and book list up
+/// to date. The license wants the latest notice shown with the text, and the
+/// catalog list doesn't carry it (only the single-Bible endpoint does). The
+/// details are cached for a day, so most launches cost nothing.
+pub fn refresh_saved(cx: &mut App) {
+    let ids: Vec<u32> = cx
+        .global::<Settings>()
+        .youversion
+        .bibles
+        .iter()
+        .map(|b| b.id)
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    let Some(task) = request(cx, move |source| {
+        let mut found = Vec::new();
+        for id in ids {
+            let Ok(details) = source.bible(id) else {
+                continue;
+            };
+            let publisher = details
+                .value
+                .organization_id
+                .as_deref()
+                .and_then(|org| source.organization_name(org).ok().flatten());
+            found.push((details.value, publisher));
+        }
+        Ok(found)
+    }) else {
+        return;
+    };
+    cx.spawn(async move |cx| {
+        let outcome = task.await;
+        cx.update(|cx| {
+            apply_renewed(outcome.session, cx);
+            let Ok(found) = outcome.result else { return };
+            let before = cx.global::<Settings>().youversion.bibles.clone();
+            cx.update_global::<Settings, _>(|s, _| {
+                for (info, publisher) in found {
+                    let Some(saved) = s.youversion.bibles.iter_mut().find(|b| b.id == info.id)
+                    else {
+                        continue;
+                    };
+                    saved.abbrev = info.label();
+                    saved.name = info.name().to_string();
+                    saved.copyright = info.copyright.unwrap_or_default().trim().to_string();
+                    saved.publisher_url = info.publisher_url.unwrap_or_default();
+                    saved.publisher = publisher.unwrap_or_default();
+                    if !info.books.is_empty() {
+                        saved.books = info.books;
+                    }
+                }
+                if s.youversion.bibles != before {
+                    s.save();
+                }
+            });
+        });
+    })
+    .detach();
 }
 
 // MARK: Catalog
@@ -437,6 +502,9 @@ pub mod demo {
                     abbrev: "DEMO".into(),
                     name: "Demo Bible (public-domain KJV wording)".into(),
                     copyright: "Public domain demo text, not from YouVersion.".into(),
+                    books: Vec::new(),
+                    publisher: String::new(),
+                    publisher_url: String::new(),
                 });
             }
         });

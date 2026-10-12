@@ -71,6 +71,15 @@ impl Cache {
         self.get_at(key, now())
     }
 
+    /// Like [`get`](Self::get) but for data that must be fresher than the TTL
+    /// (copyright notices: the license wants the latest from the API).
+    pub fn get_max_age(&self, key: &str, max_age: Duration) -> Option<String> {
+        let entry = Self::read(&self.path(key))?;
+        let age = now().checked_sub(entry.fetched_at)?;
+        (entry.key == key && self.fresh(&entry, now()) && age < max_age.as_secs())
+            .then_some(entry.body)
+    }
+
     pub fn get_at(&self, key: &str, now: u64) -> Option<String> {
         let entry = Self::read(&self.path(key))?;
         (entry.key == key && self.fresh(&entry, now)).then_some(entry.body)

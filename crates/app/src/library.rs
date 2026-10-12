@@ -119,6 +119,21 @@ pub struct SavedBible {
     pub name: String,
     #[serde(default)]
     pub copyright: String,
+    /// USFM codes of the books it has; empty when unknown (older saves).
+    #[serde(default)]
+    pub books: Vec<String>,
+    /// Publisher name and site, shown as a link with the copyright notice
+    /// (Biblica's license requires a link containing "Biblica").
+    #[serde(default)]
+    pub publisher: String,
+    #[serde(default)]
+    pub publisher_url: String,
+}
+
+impl SavedBible {
+    pub fn has_book(&self, usfm: &str) -> bool {
+        self.books.is_empty() || self.books.iter().any(|b| b.eq_ignore_ascii_case(usfm))
+    }
 }
 
 /// Settings for the optional YouVersion source.

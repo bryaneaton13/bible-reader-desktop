@@ -11,9 +11,24 @@ use crate::cache::Cache;
 use crate::client::{Client, Error};
 use crate::html::{Chapter, parse_chapter, verse_texts};
 
+/// The list returns `id` as a number and the single-Bible endpoint as a string.
+fn id_from_number_or_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Id {
+        Number(u32),
+        Text(String),
+    }
+    match Id::deserialize(d)? {
+        Id::Number(n) => Ok(n),
+        Id::Text(s) => s.trim().parse().map_err(serde::de::Error::custom),
+    }
+}
+
 /// A Bible in YouVersion's catalog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BibleInfo {
+    #[serde(deserialize_with = "id_from_number_or_string")]
     pub id: u32,
     #[serde(default)]
     pub abbreviation: String,
@@ -25,16 +40,36 @@ pub struct BibleInfo {
     pub language_tag: String,
     #[serde(default)]
     pub copyright: Option<String>,
+    /// The abbreviation to show ("GNV"), where `abbreviation` is an id ("enggnv").
+    #[serde(default)]
+    pub localized_abbreviation: Option<String>,
+    /// USFM codes of the books this Bible has. Some are New Testament only.
+    #[serde(default)]
+    pub books: Vec<String>,
+    /// The publisher's site, to link beside the copyright notice.
+    #[serde(default)]
+    pub publisher_url: Option<String>,
+    #[serde(default)]
+    pub organization_id: Option<String>,
 }
 
 impl BibleInfo {
     /// Short label for pickers and tabs. Falls back to the id.
     pub fn label(&self) -> String {
-        if self.abbreviation.trim().is_empty() {
-            format!("#{}", self.id)
-        } else {
-            self.abbreviation.trim().to_string()
-        }
+        [
+            self.localized_abbreviation.as_deref(),
+            Some(&self.abbreviation),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|a| !a.is_empty())
+        .map_or_else(|| format!("#{}", self.id), str::to_string)
+    }
+
+    /// Whether the Bible has this book (true when the list is unknown).
+    pub fn has_book(&self, usfm: &str) -> bool {
+        self.books.is_empty() || self.books.iter().any(|b| b.eq_ignore_ascii_case(usfm))
     }
 
     pub fn name(&self) -> &str {
@@ -170,6 +205,46 @@ impl Source {
 
     fn parse<T: serde::de::DeserializeOwned>(body: &str) -> Result<T, Error> {
         serde_json::from_str(body).map_err(|e| Error::Invalid(e.to_string()))
+    }
+
+    /// One Bible's full details. Unlike the list, this carries the copyright
+    /// notice and publisher link that must be shown with the text. Kept at
+    /// most a day, because the license asks for the latest notice.
+    pub fn bible(&self, id: u32) -> Result<Fetched<BibleInfo>, Error> {
+        let key = format!("bible:{id}");
+        if let Some(body) = self
+            .cache
+            .get_max_age(&key, std::time::Duration::from_secs(86_400))
+        {
+            return Ok(Fetched {
+                value: Self::parse(&body)?,
+                from_cache: true,
+            });
+        }
+        let body = self.client.get(&format!("/v1/bibles/{id}"), &[])?;
+        let value = Self::parse(&body)?;
+        let _ = self.cache.put(&key, &body);
+        Ok(Fetched {
+            value,
+            from_cache: false,
+        })
+    }
+
+    /// A publisher's display name ("Biblica"), for the link beside a notice.
+    pub fn organization_name(&self, id: &str) -> Result<Option<String>, Error> {
+        #[derive(Deserialize)]
+        struct Org {
+            #[serde(default)]
+            name: Option<String>,
+        }
+        let (body, _) = self.cached(
+            &format!("org:{id}"),
+            &format!("/v1/organizations/{id}"),
+            &[],
+        )?;
+        Ok(Self::parse::<Org>(&body)?
+            .name
+            .filter(|n| !n.trim().is_empty()))
     }
 
     /// Bibles in `languages` ("en", "es", or "*" for all). With
@@ -538,6 +613,92 @@ mod tests {
         assert!(got.from_cache);
         assert_eq!(got.value, "For God so loved the world.");
         assert_eq!(src.client().requests_made(), 0);
+        let _ = std::fs::remove_dir_all(src.cache().dir());
+    }
+
+    #[test]
+    fn labels_prefer_the_display_abbreviation_and_books_can_be_checked() {
+        let info: BibleInfo = serde_json::from_str(
+            r#"{"id":2163,"abbreviation":"enggnv","localized_abbreviation":"GNV","title":"Geneva Bible","books":["MAT","JHN"]}"#,
+        )
+        .unwrap();
+        assert_eq!(info.label(), "GNV");
+        assert!(info.has_book("jhn"));
+        assert!(!info.has_book("GEN"));
+        // No list (older data): assume it has everything.
+        let unknown: BibleInfo = serde_json::from_str(r#"{"id":1,"abbreviation":"X"}"#).unwrap();
+        assert_eq!(unknown.label(), "X");
+        assert!(unknown.has_book("GEN"));
+    }
+
+    #[test]
+    fn a_missing_passage_is_a_clear_not_found() {
+        let (base, log) = serve(|_| (404, "{}".into()));
+        let src = fake("notfound", &base);
+        let err = src.chapter(111, ChapterRef::new(1, 1)).unwrap_err();
+        assert_eq!(err, Error::NotFound);
+        assert_eq!(lock(&log).len(), 1);
+        let _ = std::fs::remove_dir_all(src.cache().dir());
+    }
+
+    #[test]
+    fn single_bible_details_parse_with_a_string_id_and_a_notice() {
+        let body = r#"{"id":"111","abbreviation":"NIV11","localized_abbreviation":"NIV","title":"New International Version 2011","copyright":"The Holy Bible, New International Version® NIV®\nCopyright © 1973, 1978, 1984, 2011 by Biblica, Inc.®","publisher_url":"https://www.biblica.com/yv-learn-more/","organization_id":"05a9"}"#;
+        let (base, log) = serve(move |path| {
+            if path.contains("/organizations/") {
+                (200, r#"{"id":"05a9","name":"Biblica"}"#.into())
+            } else {
+                (200, body.into())
+            }
+        });
+        let src = fake("details", &base);
+        let got = src.bible(111).unwrap();
+        assert_eq!(got.value.id, 111);
+        assert_eq!(got.value.label(), "NIV");
+        assert!(
+            got.value
+                .copyright
+                .as_deref()
+                .unwrap()
+                .contains("Biblica, Inc.")
+        );
+        assert_eq!(
+            src.organization_name("05a9").unwrap().as_deref(),
+            Some("Biblica")
+        );
+        // Both are cached now.
+        assert!(src.bible(111).unwrap().from_cache);
+        assert!(src.organization_name("05a9").is_ok());
+        assert_eq!(lock(&log).len(), 2);
+        let _ = std::fs::remove_dir_all(src.cache().dir());
+    }
+
+    #[test]
+    fn a_transient_server_error_is_retried_but_a_missing_passage_is_not() {
+        let tries = Arc::new(AtomicUsize::new(0));
+        let counter = tries.clone();
+        let (base, log) = serve(move |path| {
+            if path.contains("PSA.117") {
+                // First answer is the API's occasional 500, then it recovers.
+                if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    (500, "error sending request".into())
+                } else {
+                    (200, passage(&chapters_html(1)))
+                }
+            } else {
+                (404, "{}".into())
+            }
+        });
+        let src = fake("retry", &base);
+        let got = src.chapter(111, ChapterRef::new(19, 117)).unwrap();
+        assert_eq!(got.value.blocks.len(), 1);
+        assert_eq!(lock(&log).len(), 2);
+        // 404 is final: one request, no retries.
+        assert_eq!(
+            src.chapter(111, ChapterRef::new(1, 1)).unwrap_err(),
+            Error::NotFound
+        );
+        assert_eq!(lock(&log).len(), 3);
         let _ = std::fs::remove_dir_all(src.cache().dir());
     }
 }

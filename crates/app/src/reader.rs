@@ -10,6 +10,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
+use gpui_kit::component::link::Link;
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
@@ -187,6 +188,12 @@ const FETCH_DELAY: std::time::Duration =
 /// pane is `Loading` and the caller starts a fetch.
 fn load_content(cx: &App, abbrev: &str, chapter: ChapterRef) -> Content {
     if let Some(bible) = saved_bible(cx.global::<Settings>(), abbrev) {
+        // A New Testament only Bible has no Genesis: say so without asking.
+        if !bible.has_book(chapter.book_info().code) {
+            return Content::failed(&bible_youversion::Error::NotInBible(
+                chapter.book_info().name.to_string(),
+            ));
+        }
         let Some(source) = remote::source(cx) else {
             return Content::failed(&bible_youversion::Error::MissingKey);
         };
@@ -1921,7 +1928,27 @@ impl ReaderView {
                     .when(!bible.copyright.trim().is_empty(), |d| {
                         d.child(bible.copyright.trim().to_string())
                     })
-                    .child("Provided by YouVersion"),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_x_3()
+                            .child("Provided by YouVersion")
+                            // Biblica's license wants a one-step link to the
+                            // publisher, with its name in the text, beside the notice.
+                            .when(
+                                !bible.publisher.is_empty() && !bible.publisher_url.is_empty(),
+                                |d| {
+                                    d.child(
+                                        Link::new(pane_id("publisher-link", right))
+                                            .href(bible.publisher_url.clone())
+                                            .text_xs()
+                                            .child(format!("{} ↗", bible.publisher)),
+                                    )
+                                },
+                            ),
+                    ),
             );
         }
 
@@ -3889,6 +3916,9 @@ mod tests {
                 abbrev: "YVT".into(),
                 name: "YouVersion Test".into(),
                 copyright: "© Example Publisher".into(),
+                books: Vec::new(),
+                publisher: String::new(),
+                publisher_url: String::new(),
             });
         });
         cache
@@ -4104,6 +4134,37 @@ mod tests {
         let log = paths.lock().unwrap().clone();
         assert_eq!(log.len(), 1, "only John 3 should be requested: {log:?}");
         assert!(log[0].contains("/passages/JHN.3?"), "{log:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_bible_without_the_book_says_so_without_a_request(cx: &mut TestAppContext) {
+        let dir = yv_scratch("nobook");
+        let d = dir.clone();
+        let Some((_, view)) = open_with(cx, move |cx| {
+            add_yv_bible(cx, &d, "127.0.0.1:9");
+            // A New Testament only Bible.
+            cx.update_global::<Settings, _>(|s, _| {
+                s.youversion.bibles[0].books = vec!["MAT".into(), "JHN".into()];
+            });
+        }) else {
+            return;
+        };
+        view.update(cx, |v, cx| {
+            v.go_to(ChapterRef::new(1, 1), None, cx);
+            v.set_translation(crate::library::remote_key(YV_ID), cx);
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            match &v.focused_content().expect("content").load {
+                Load::Failed { message, .. } => {
+                    assert_eq!(message, "This Bible doesn't include Genesis.")
+                }
+                _ => panic!("expected a failed load"),
+            }
+        });
+        let requests = cx.read(|cx| cx.global::<remote::Remote>().requests_made());
+        assert_eq!(requests, 0);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -618,6 +618,7 @@ dependencies = [
  "anyhow",
  "base64 0.23.1",
  "bible-core",
+ "bible-store",
  "getrandom 0.4.3",
  "security-framework",
  "serde",
