@@ -7,7 +7,7 @@ use gpui_kit::base::Root;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::link::Link;
 use gpui_kit::component::setting::{
-    NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage,
+    NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage,
     Settings as SettingsPanel,
 };
 use gpui_kit::*;
@@ -103,13 +103,44 @@ fn linked_text(id: impl Into<ElementId>, text: String, color: Hsla) -> impl Into
     InteractiveText::new(id, styled).on_click(links, move |ix, _, cx| cx.open_url(&urls[ix]))
 }
 
+/// Dev-only: `BIBLE_READER_SOURCES_GROUP=2` opens a sub-section of Bible
+/// sources, so screenshots can reach below the fold.
+#[cfg(feature = "screenshot")]
+fn debug_group() -> Option<usize> {
+    std::env::var("BIBLE_READER_SOURCES_GROUP")
+        .ok()?
+        .parse()
+        .ok()
+}
+
+/// Dev-only: `BIBLE_READER_SETTINGS_HEIGHT=1400` for a tall screenshot.
+#[cfg(feature = "screenshot")]
+fn debug_height() -> f32 {
+    std::env::var("BIBLE_READER_SETTINGS_HEIGHT")
+        .ok()
+        .and_then(|h| h.parse().ok())
+        .unwrap_or(520.)
+}
+
+#[cfg(not(feature = "screenshot"))]
+fn debug_height() -> f32 {
+    520.
+}
+
+#[cfg(not(feature = "screenshot"))]
+fn debug_group() -> Option<usize> {
+    None
+}
+
 /// The settings window, if open.
 pub struct SettingsWindow(pub Option<WindowHandle<Root>>);
 
 impl Global for SettingsWindow {}
 
 struct SettingsView {
-    _observe: Subscription,
+    /// Open on the Bible sources page (set when a pane sends the user here).
+    open_sources: bool,
+    _observe: Vec<Subscription>,
 }
 
 /// Write one setting and persist it.
@@ -155,7 +186,7 @@ fn switch(
     .default_value(default)
 }
 
-fn pages() -> Vec<SettingPage> {
+fn pages(cx: &App, open_sources: bool) -> Vec<SettingPage> {
     let defaults = Settings::default();
     let fonts = FontPairing::ALL
         .iter()
@@ -172,7 +203,7 @@ fn pages() -> Vec<SettingPage> {
         .collect();
 
     let reading = SettingPage::new("Reading")
-        .default_open(true)
+        .default_open(!open_sources)
         .description("How the chapter text is set.")
         .group(
             SettingGroup::new().title("Text").items([
@@ -353,11 +384,13 @@ fn pages() -> Vec<SettingPage> {
                 })),
         );
 
-    vec![reading, appearance, about]
+    let sources = crate::sources_page::page(cx).default_open(open_sources);
+    vec![reading, appearance, sources, about]
 }
 
 impl Render for SettingsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pages = pages(cx, self.open_sources);
         // The panel has no sidebar footer slot, so the app badge is laid over
         // the bottom of the sidebar, under its three page rows.
         div()
@@ -366,7 +399,12 @@ impl Render for SettingsView {
             .child(
                 SettingsPanel::new("settings")
                     .sidebar_width(px(SIDEBAR_WIDTH))
-                    .pages(pages()),
+                    .default_selected_index(SelectIndex {
+                        // Reading, Appearance, Bible sources, About.
+                        page_ix: if self.open_sources { 2 } else { 0 },
+                        group_ix: debug_group(),
+                    })
+                    .pages(pages),
             )
             .child(
                 div()
@@ -402,6 +440,20 @@ impl Render for SettingsView {
 
 /// Focus the Settings window or open it.
 pub fn open(cx: &mut App) {
+    open_page(false, cx);
+}
+
+/// Open Settings on ▸ Bible sources (a failed YouVersion chapter links here).
+pub fn open_sources(cx: &mut App) {
+    // The panel only reads its starting page when it is created, so an open
+    // window is closed and reopened on the right one.
+    if let Some(window) = cx.global::<SettingsWindow>().0 {
+        let _ = window.update(cx, |_, window, _| window.remove_window());
+    }
+    open_page(true, cx);
+}
+
+fn open_page(sources: bool, cx: &mut App) {
     cx.activate(true);
     if let Some(window) = cx.global::<SettingsWindow>().0
         && window
@@ -410,8 +462,17 @@ pub fn open(cx: &mut App) {
     {
         return;
     }
+    if cx
+        .try_global::<crate::remote::Remote>()
+        .is_some_and(|r| r.has_key() && r.catalog == crate::remote::Catalog::Idle)
+    {
+        crate::remote::refresh_catalog(cx);
+    }
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(760.), px(520.)), cx)),
+        window_bounds: Some(WindowBounds::centered(
+            size(px(760.), px(debug_height())),
+            cx,
+        )),
         titlebar: Some(TitlebarOptions {
             title: Some("Settings".into()),
             ..Default::default()
@@ -422,8 +483,14 @@ pub fn open(cx: &mut App) {
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
         crate::appearance::reapply(window, cx);
         cx.new(|cx| SettingsView {
-            // Repaint when a setting changes elsewhere (⌘+, the menu).
-            _observe: cx.observe_global::<Settings>(|_, cx| cx.notify()),
+            open_sources: sources,
+            // Repaint when a setting changes elsewhere (⌘+, the menu) and
+            // when the YouVersion state (sign-in, catalog, cache) moves.
+            _observe: vec![
+                cx.observe_global::<Settings>(|_, cx| cx.notify()),
+                cx.observe_global::<crate::remote::Remote>(|_, cx| cx.notify()),
+                cx.observe_global::<crate::sources_page::Filter>(|_, cx| cx.notify()),
+            ],
         })
     });
     match opened {

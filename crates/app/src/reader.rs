@@ -14,6 +14,8 @@ use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
+use gpui_kit::component::skeleton::Skeleton;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Selectable as _, Sizable as _,
@@ -25,12 +27,13 @@ use gpui_kit::*;
 use crate::chapter_view::{self, Options, Palette, note_marker, render_block};
 use crate::library::{
     Appearance, FONT_SIZE_RANGE, FontPairing, LINE_HEIGHT_RANGE, Library, Settings,
-    current_translation,
+    current_translation, is_available, remote_id, saved_bible, source_label, sources,
 };
 use crate::palette::{
     self, ActivateTab, COMMAND_PREFIX, CloseTabAt, OpenPassage, PinTab, RenameTab, Row,
     SEARCH_LIMIT, SUGGESTIONS_SHOWN, SearchIn, SetPaletteQuery,
 };
+use crate::remote;
 use crate::suggestions;
 use crate::tabs::{Location, Tab};
 use crate::translation_picker::TranslationItem;
@@ -49,32 +52,61 @@ mod search_page;
 use search_page::SearchPage;
 
 /// Verse (or whole chapter) text with a citation and, for translations that
-/// aren't public domain, the copyright notice.
-fn copy_text(cx: &App, chapter: ChapterRef, verse: Option<VerseId>) -> Option<String> {
-    let translation = current_translation(cx);
-    let (body, reference) = match verse {
-        Some(id) => (translation.verse_text(id).ok()??, id.to_string()),
-        None => {
-            let mut lines = Vec::new();
+/// aren't public domain, the copyright notice. `key` is the focused pane's
+/// translation; `content` its loaded chapter (YouVersion text lives there,
+/// not in a database).
+fn copy_text(
+    cx: &App,
+    content: Option<&Content>,
+    key: &str,
+    chapter: ChapterRef,
+    verse: Option<VerseId>,
+) -> Option<String> {
+    let settings = cx.global::<Settings>();
+    let (verses, abbrev, notice): (Vec<(u16, String)>, String, String) =
+        if let Some(bible) = saved_bible(settings, key) {
+            let texts = bible_youversion::verse_texts(&content?.blocks);
+            let notice = if bible.copyright.trim().is_empty() {
+                "Provided by YouVersion.".to_string()
+            } else {
+                format!("{} Provided by YouVersion.", bible.copyright.trim())
+            };
+            (texts, bible.abbrev.clone(), notice)
+        } else {
+            let library = cx.global::<Library>();
+            let translation = &library.translations[library.index_of(key).unwrap_or(0)];
+            let mut texts = Vec::new();
             for v in 1u16.. {
                 match translation.verse_text(VerseId::new(chapter.book, chapter.chapter, v)) {
-                    Ok(Some(t)) => lines.push(format!("{v} {t}")),
+                    Ok(Some(t)) => texts.push((v, t)),
                     _ => break,
                 }
             }
-            if lines.is_empty() {
+            (
+                texts,
+                translation.info.abbrev.clone(),
+                translation.info.copyright.trim().to_string(),
+            )
+        };
+    let (body, reference) = match verse {
+        Some(id) => {
+            let (_, text) = verses.iter().find(|(v, _)| *v == id.verse())?;
+            (text.clone(), id.to_string())
+        }
+        None => {
+            if verses.is_empty() {
                 return None;
             }
+            let lines: Vec<String> = verses.iter().map(|(v, t)| format!("{v} {t}")).collect();
             (lines.join("\n"), chapter.to_string())
         }
     };
-    let abbrev = &translation.info.abbrev;
     let mut out = if verse.is_some() {
         format!("“{body}” — {reference} ({abbrev})")
     } else {
         format!("{body}\n— {reference} ({abbrev})")
     };
-    let notice = translation.info.copyright.trim();
+    let notice = notice.trim();
     if !notice.is_empty() && !notice.to_lowercase().contains("public domain") {
         out.push('\n');
         out.push_str(notice);
@@ -103,14 +135,64 @@ struct DraggedPane {
 /// panes side by side; below it only the focused pane is shown.
 const SPLIT_MIN_WIDTH: f32 = 760.;
 
+/// What a pane is showing right now.
+#[derive(Default, Clone, PartialEq)]
+enum Load {
+    #[default]
+    Ready,
+    /// A YouVersion chapter is being fetched.
+    Loading,
+    /// The fetch failed. `setup` means Settings can fix it (no key, not licensed).
+    Failed { message: String, setup: bool },
+}
+
 /// Chapter text and footnotes for one pane.
 #[derive(Default)]
 struct Content {
     blocks: Vec<Block>,
     notes: Vec<Note>,
+    load: Load,
 }
 
+impl Content {
+    fn failed(err: &bible_youversion::Error) -> Self {
+        Self {
+            load: Load::Failed {
+                message: err.to_string(),
+                setup: matches!(
+                    err,
+                    bible_youversion::Error::MissingKey | bible_youversion::Error::NotPermitted
+                ),
+            },
+            ..Self::default()
+        }
+    }
+
+    fn from_chapter(chapter: bible_youversion::Chapter) -> Self {
+        Self {
+            blocks: chapter.blocks,
+            notes: chapter.notes,
+            load: Load::Ready,
+        }
+    }
+}
+
+/// A pane's chapter. YouVersion chapters come from the disk cache when they
+/// are there (no network, so this is safe on the UI thread); otherwise the
+/// pane is `Loading` and the caller starts a fetch.
 fn load_content(cx: &App, abbrev: &str, chapter: ChapterRef) -> Content {
+    if let Some(bible) = saved_bible(cx.global::<Settings>(), abbrev) {
+        let Some(source) = remote::source(cx) else {
+            return Content::failed(&bible_youversion::Error::MissingKey);
+        };
+        return match source.chapter_cached(bible.id, chapter) {
+            Some(cached) => Content::from_chapter(cached),
+            None => Content {
+                load: Load::Loading,
+                ..Content::default()
+            },
+        };
+    }
     let library = cx.global::<Library>();
     let translation = &library.translations[library.index_of(abbrev).unwrap_or(0)];
     Content {
@@ -120,6 +202,7 @@ fn load_content(cx: &App, abbrev: &str, chapter: ChapterRef) -> Content {
             .flatten()
             .unwrap_or_default(),
         notes: translation.notes_for_chapter(chapter).unwrap_or_default(),
+        load: Load::Ready,
     }
 }
 
@@ -199,6 +282,9 @@ pub struct ReaderView {
     palette: Entity<CommandState>,
     palette_groups: Vec<palette::Group>,
     translation_select: Entity<TranslationSelect>,
+    /// Keys of the rows in the translation dropdowns, to notice when the user
+    /// adds or removes a YouVersion Bible.
+    source_keys: Vec<String>,
     /// Translation dropdown in the right pane's header.
     side_select: Entity<TranslationSelect>,
     split_state: Entity<ResizableState>,
@@ -227,31 +313,28 @@ impl ReaderView {
                 settings.translation.clone(),
             ));
         }
-        let library = cx.global::<Library>();
+        let fallback = cx.global::<Library>().translations[0].info.abbrev.clone();
         for tab in &mut tabs {
-            if library.index_of(&tab.translation).is_none() {
-                tab.translation = library.translations[0].info.abbrev.clone();
+            if !is_available(cx, &tab.translation) {
+                tab.translation = fallback.clone();
             }
-        }
-        for tab in &mut tabs {
             if let Some(side) = tab.side.as_mut()
-                && library.index_of(&side.translation).is_none()
+                && !is_available(cx, &side.translation)
             {
-                side.translation = library.translations[0].info.abbrev.clone();
+                side.translation = fallback.clone();
             }
         }
         let active = settings.active_tab.min(tabs.len() - 1);
 
+        let entries = sources(cx);
+        let source_keys: Vec<String> = entries.iter().map(|e| e.key.clone()).collect();
         let make_items = || -> Vec<TranslationItem> {
-            library
-                .translations
-                .iter()
-                .map(TranslationItem::from_translation)
-                .collect()
+            entries.iter().map(TranslationItem::from_entry).collect()
         };
-        let selected_in = |abbrev: &str| {
-            library
-                .index_of(abbrev)
+        let selected_in = |key: &str| {
+            source_keys
+                .iter()
+                .position(|k| k == key)
                 .map(|ix| IndexPath::default().row(ix))
         };
         let selected = selected_in(&tabs[active].translation);
@@ -283,7 +366,10 @@ impl ReaderView {
             cx.subscribe_in(&rename_input, window, Self::on_rename_input),
             cx.subscribe_in(&search_input, window, Self::on_search_input),
             // Settings window changes and menu actions repaint the reader.
-            cx.observe_global::<Settings>(|_, cx| cx.notify()),
+            cx.observe_global::<Settings>(|this, cx| this.on_settings_changed(cx)),
+            // Sign-in and catalog changes repaint; a changed key or session can
+            // turn a failed chapter into a loadable one on retry.
+            cx.observe_global::<remote::Remote>(|_, cx| cx.notify()),
             cx.observe_window_appearance(window, |_, window, cx| {
                 if cx.global::<Settings>().appearance == Appearance::System {
                     crate::appearance::reapply(window, cx);
@@ -315,6 +401,7 @@ impl ReaderView {
             palette,
             palette_groups: Vec::new(),
             translation_select,
+            source_keys: Vec::new(),
             side_select,
             split_state,
             drop_zone: None,
@@ -369,12 +456,12 @@ impl ReaderView {
         let focused = self.tab();
         let (id, location, abbrev) = (focused.id, focused.location, focused.translation.clone());
         let scroll = focused.scroll.clone();
-        let content = load_content(cx, &abbrev, location.chapter);
+        self.load_pane(id, &abbrev, location.chapter, cx);
         if let Some(v) = location.verse {
             // Child 0 of the scroll container is the chapter title.
-            scroll.scroll_to_top_of_item(block_of_verse(&content.blocks, v) + 1);
+            let blocks = self.content.get(&id).map_or(&[][..], |c| &c.blocks[..]);
+            scroll.scroll_to_top_of_item(block_of_verse(blocks, v) + 1);
         }
-        self.content.insert(id, content);
 
         let tab = &self.tabs[self.active];
         let others: Vec<(u64, String, ChapterRef)> = [Some(tab), tab.side.as_deref()]
@@ -384,8 +471,7 @@ impl ReaderView {
             .map(|p| (p.id, p.translation.clone(), p.location.chapter))
             .collect();
         for (pane_id, abbrev, chapter) in others {
-            self.content
-                .insert(pane_id, load_content(cx, &abbrev, chapter));
+            self.load_pane(pane_id, &abbrev, chapter, cx);
         }
         let live: HashSet<u64> = self
             .tabs
@@ -397,6 +483,123 @@ impl ReaderView {
 
         self.selected_note = None;
         self.sync_focus(cx);
+    }
+
+    /// Load one pane's chapter, fetching it from YouVersion when it isn't cached.
+    fn load_pane(&mut self, id: u64, key: &str, chapter: ChapterRef, cx: &mut Context<Self>) {
+        let content = load_content(cx, key, chapter);
+        let fetch = content.load == Load::Loading;
+        self.content.insert(id, content);
+        if fetch {
+            self.fetch_remote(id, key.to_string(), chapter, cx);
+        }
+    }
+
+    /// Fetch a YouVersion chapter on the background executor. The pane shows a
+    /// loading state meanwhile; the result is dropped if the pane has moved on.
+    fn fetch_remote(&mut self, id: u64, key: String, chapter: ChapterRef, cx: &mut Context<Self>) {
+        let Some(bible) = remote_id(&key) else { return };
+        let Some(task) = remote::request(cx, move |source| {
+            source.chapter(bible, chapter).map(|fetched| fetched.value)
+        }) else {
+            self.content
+                .insert(id, Content::failed(&bible_youversion::Error::MissingKey));
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |this, cx| {
+                remote::apply_renewed(outcome.session, cx);
+                this.finish_remote(id, &key, chapter, outcome.result, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn finish_remote(
+        &mut self,
+        id: u64,
+        key: &str,
+        chapter: ChapterRef,
+        result: Result<bible_youversion::Chapter, bible_youversion::Error>,
+        cx: &mut Context<Self>,
+    ) {
+        let pane = self
+            .tabs
+            .iter()
+            .flat_map(|t| std::iter::once(t).chain(t.side.as_deref()))
+            .find(|p| p.id == id);
+        let Some(pane) = pane else { return };
+        if pane.translation != key || pane.location.chapter != chapter {
+            return;
+        }
+        let verse = pane.location.verse;
+        let scroll = pane.scroll.clone();
+        let content = match result {
+            Ok(fetched) => Content::from_chapter(fetched),
+            Err(err) => Content::failed(&err),
+        };
+        if let Some(v) = verse {
+            scroll.scroll_to_top_of_item(block_of_verse(&content.blocks, v) + 1);
+        }
+        self.content.insert(id, content);
+        cx.notify();
+    }
+
+    /// "Try again" on a pane whose YouVersion chapter failed to load.
+    fn retry_pane(&mut self, right: bool, cx: &mut Context<Self>) {
+        let Some(pane) = self.pane(right) else { return };
+        let (id, key, chapter) = (pane.id, pane.translation.clone(), pane.location.chapter);
+        self.content.insert(
+            id,
+            Content {
+                load: Load::Loading,
+                ..Content::default()
+            },
+        );
+        self.fetch_remote(id, key, chapter, cx);
+        cx.notify();
+    }
+
+    /// A Bible was added to or removed from the user's YouVersion list: move
+    /// any pane showing a removed one back to a bundled translation.
+    fn on_settings_changed(&mut self, cx: &mut Context<Self>) {
+        let fallback = cx.global::<Library>().translations[0].info.abbrev.clone();
+        let mut changed = false;
+        for tab in &mut self.tabs {
+            if !is_available(cx, &tab.translation) {
+                tab.translation = fallback.clone();
+                changed = true;
+            }
+            if let Some(side) = tab.side.as_mut()
+                && !is_available(cx, &side.translation)
+            {
+                side.translation = fallback.clone();
+                changed = true;
+            }
+        }
+        if changed {
+            self.show_active(cx);
+        }
+        cx.notify();
+    }
+
+    /// Keep the translation dropdowns in step with the user's Bible list.
+    fn sync_translation_items(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let entries = sources(cx);
+        let keys: Vec<String> = entries.iter().map(|e| e.key.clone()).collect();
+        if keys == self.source_keys {
+            return;
+        }
+        self.source_keys = keys;
+        for select in [self.translation_select.clone(), self.side_select.clone()] {
+            let items: Vec<TranslationItem> =
+                entries.iter().map(TranslationItem::from_entry).collect();
+            select.update(cx, |select, cx| {
+                select.set_items(SearchableVec::new(items), window, cx)
+            });
+        }
     }
 
     /// Point everything that follows "the current pane" (sidebar, menu bar,
@@ -458,7 +661,7 @@ impl ReaderView {
             if select.read(cx).selected_value() == Some(&abbrev) {
                 continue;
             }
-            if let Some(ix) = cx.global::<Library>().index_of(&abbrev) {
+            if let Some(ix) = self.source_keys.iter().position(|k| *k == abbrev) {
                 select.update(cx, |select, cx| {
                     select.set_selected_index(Some(IndexPath::default().row(ix)), window, cx)
                 });
@@ -800,15 +1003,10 @@ impl ReaderView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(abbrev) = cx
-            .global::<Library>()
-            .translations
-            .get(action.index)
-            .map(|t| t.info.abbrev.clone())
-        else {
+        let Some(entry) = sources(cx).into_iter().nth(action.index) else {
             return;
         };
-        self.set_translation(abbrev, cx);
+        self.set_translation(entry.key, cx);
     }
 
     fn on_translation_selected(
@@ -887,14 +1085,26 @@ impl ReaderView {
         let verse = self
             .target()
             .unwrap_or(VerseId::new(chapter.book, chapter.chapter, 1));
-        if let Some(text) = copy_text(cx, chapter, Some(verse)) {
+        if let Some(text) = copy_text(
+            cx,
+            self.focused_content(),
+            &self.tab().translation,
+            chapter,
+            Some(verse),
+        ) {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
 
     /// ⌥⌘C: copy the whole chapter with its citation.
     fn copy_chapter(&mut self, _: &CopyChapter, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = copy_text(cx, self.chapter(), None) {
+        if let Some(text) = copy_text(
+            cx,
+            self.focused_content(),
+            &self.tab().translation,
+            self.chapter(),
+            None,
+        ) {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
@@ -958,12 +1168,8 @@ impl ReaderView {
             tabs: self.tabs.iter().map(|t| self.tab_title(t)).collect(),
             split: self.tabs[self.active].is_split(),
             recent: &settings.recent,
-            translations: library
-                .translations
-                .iter()
-                .map(|t| (t.info.abbrev.clone(), t.info.name.clone()))
-                .collect(),
-            translation: &translation.info.abbrev,
+            translations: sources(cx),
+            translation: &self.tab().translation,
             appearance: settings.appearance,
             font_pairing: settings.font_pairing,
             active_pinned: self.tabs[self.active].pinned,
@@ -1521,6 +1727,18 @@ impl ReaderView {
                 ),
         );
 
+        if content.load != Load::Ready {
+            column = column.child(self.render_pane_status(
+                right,
+                &content.load,
+                &pane.translation,
+                pane_chapter,
+                reading_width,
+                font_size,
+                cx,
+            ));
+        }
+
         // Verse still running at the start of each block (poetry lines,
         // paragraph breaks mid-verse), so the jump target is highlighted whole.
         let mut verse_in_progress = None;
@@ -1657,6 +1875,30 @@ impl ReaderView {
             column = column.child(el);
         }
 
+        if let Some(bible) = saved_bible(settings, &pane.translation)
+            && content.load == Load::Ready
+        {
+            // YouVersion requires the version's attribution next to its text.
+            column = column.child(
+                div()
+                    .w_full()
+                    .max_w(reading_width)
+                    .px_6()
+                    .pt_8()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .font_family(".SystemUIFont")
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(format!("{} · {}", bible.abbrev, bible.name))
+                    .when(!bible.copyright.trim().is_empty(), |d| {
+                        d.child(bible.copyright.trim().to_string())
+                    })
+                    .child("Provided by YouVersion"),
+            );
+        }
+
         let next = pane_chapter.next();
         column = column.child(
             div()
@@ -1700,6 +1942,146 @@ impl ReaderView {
             .line_height(relative(line_height))
             .text_color(theme.foreground)
             .child(column)
+    }
+
+    /// What a YouVersion pane shows instead of text: placeholder lines while
+    /// the chapter loads, or why it couldn't.
+    #[allow(clippy::too_many_arguments)]
+    fn render_pane_status(
+        &self,
+        right: bool,
+        load: &Load,
+        key: &str,
+        chapter: ChapterRef,
+        reading_width: Pixels,
+        font_size: f32,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme();
+        let label = source_label(cx, key);
+        let wrap = div()
+            .id(pane_id("pane-status", right))
+            .w_full()
+            .max_w(reading_width)
+            .px_6()
+            .pb_4()
+            .font_family(".SystemUIFont");
+        match load {
+            Load::Ready => div().into_any_element(),
+            Load::Loading => {
+                let line = |w: f32| {
+                    Skeleton::new()
+                        .h(px(font_size * 0.9))
+                        .w(relative(w))
+                        .rounded_md()
+                };
+                wrap.flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_sm()
+                            .text_color(theme.muted_foreground)
+                            .child(Spinner::new().small())
+                            .child(format!("Loading {chapter} ({label}) from YouVersion…")),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .pt_2()
+                            .children([0.97, 0.92, 0.99, 0.86, 0.58].map(line)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .pt_2()
+                            .children([0.95, 0.99, 0.9, 0.96, 0.42].map(line)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .pt_2()
+                            .children([0.98, 0.9, 0.94, 0.7].map(line)),
+                    )
+                    .into_any_element()
+            }
+            Load::Failed { message, setup } => {
+                let fallback = cx.global::<Library>().translations[0].info.abbrev.clone();
+                let read_in = fallback.clone();
+                wrap.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .p_4()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.sidebar)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(Icon::new(IconName::TriangleAlert).text_color(theme.warning))
+                                .child(format!("Couldn't load {chapter} ({label})")),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.muted_foreground)
+                                .child(message.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap_2()
+                                .child(
+                                    Button::new(pane_id("retry", right))
+                                        .icon(IconName::RefreshCw)
+                                        .label("Try again")
+                                        .small()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.retry_pane(right, cx)
+                                        })),
+                                )
+                                .when(*setup, |row| {
+                                    row.child(
+                                        Button::new(pane_id("open-sources", right))
+                                            .icon(IconName::Settings)
+                                            .label("Bible sources settings")
+                                            .small()
+                                            .on_click(|_, _, cx| {
+                                                crate::settings_window::open_sources(cx)
+                                            }),
+                                    )
+                                })
+                                .child(
+                                    Button::new(pane_id("read-local", right))
+                                        .label(format!("Read in {fallback} instead"))
+                                        .ghost()
+                                        .small()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.focus_pane(right, cx);
+                                            this.set_translation(read_in.clone(), cx);
+                                        })),
+                                ),
+                        ),
+                )
+                .into_any_element()
+            }
+        }
     }
 
     /// Header above a pane of a split tab: translation, passage, close.
@@ -1929,7 +2311,7 @@ impl ReaderView {
 
     fn render_inspector(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let abbrev = current_translation(cx).info.abbrev.clone();
+        let abbrev = source_label(cx, &self.tab().translation);
         let no_content = Content::default();
         let notes = &self.focused_content().unwrap_or(&no_content).notes;
         let mut list = div()
@@ -2429,6 +2811,62 @@ impl ReaderView {
                     .and_then(|c| c.notes.first())
                     .map(|n| n.id);
             }
+            // YouVersion fixtures (see remote::demo): a fake Bible with cached text.
+            "yvdemo" => {
+                crate::remote::demo::seed(cx);
+                self.set_translation(crate::remote::demo::key(), cx);
+            }
+            "yvloading" | "yverror" => {
+                let id = self.tab().id;
+                let load = if name == "yvloading" {
+                    Load::Loading
+                } else {
+                    Load::Failed {
+                        message: bible_youversion::Error::RateLimited {
+                            retry_after: Some(1800),
+                        }
+                        .to_string(),
+                        setup: false,
+                    }
+                };
+                self.content.insert(
+                    id,
+                    Content {
+                        load,
+                        ..Content::default()
+                    },
+                );
+            }
+            "yvstate" => crate::remote::demo::sign_in(arg, cx),
+            "yvsearch" => {
+                if let Some(page) = self.search.as_mut() {
+                    let verses = [
+                        (
+                            43,
+                            3,
+                            16,
+                            "For God so loved the world, that he gave his only begotten Son, that whosoever believeth in him should not perish, but have everlasting life.",
+                        ),
+                        (
+                            46,
+                            13,
+                            4,
+                            "Charity suffereth long, and is kind; charity envieth not; charity vaunteth not itself, is not puffed up,",
+                        ),
+                    ];
+                    page.yv.bible = Some(crate::remote::demo::ID);
+                    page.yv.entries = verses
+                        .iter()
+                        .map(|(b, c, v, t)| search_page::YvEntry {
+                            verse: VerseId::new(*b, *c, *v),
+                            text: (*t).to_string(),
+                        })
+                        .collect();
+                    page.yv.next_token = Some("more".into());
+                    page.yv.requests_used = 3;
+                    page.yv.state = search_page::YvState::Done;
+                }
+            }
             "nosidebar" => self.update_settings(cx, |s| s.sidebar_open = false),
             "dark" | "light" | "sepia" | "system" => {
                 let appearance = match name {
@@ -2510,6 +2948,7 @@ impl Focusable for ReaderView {
 
 impl Render for ReaderView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_translation_items(window, cx);
         self.sync_translation_select(window, cx);
         let settings = cx.global::<Settings>();
         let sidebar_open = settings.sidebar_open;
@@ -2639,12 +3078,22 @@ mod tests {
     use super::*;
 
     fn open(cx: &mut TestAppContext) -> Option<(WindowHandle<Root>, Entity<ReaderView>)> {
+        open_with(cx, |_| {})
+    }
+
+    /// Like `open`, with `setup` run after the globals exist and before the
+    /// window does (to add a YouVersion source, say).
+    fn open_with(
+        cx: &mut TestAppContext,
+        setup: impl FnOnce(&mut App),
+    ) -> Option<(WindowHandle<Root>, Entity<ReaderView>)> {
         let library = Library::load(&crate::library::data_dir()).ok()?;
         Some(cx.update(|cx| {
             gpui_kit::init(cx);
             crate::bind_keys(cx);
             cx.set_global(library);
             cx.set_global(Settings::default());
+            setup(cx);
             let (window, view) = gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -3384,5 +3833,204 @@ mod tests {
             assert_eq!(v.tab().label(), "Romans 8 · BSB");
             assert_eq!(v.active, 1);
         });
+    }
+
+    // MARK: YouVersion sources
+
+    const YV_ID: u32 = 777;
+
+    /// Synthetic chapter in YouVersion's markup (public-domain wording).
+    const YV_JOHN_3: &str = r#"{"id":"JHN.3","content":"<div><div class=\"s1\">Heading</div><div class=\"p\"><span class=\"yv-v\" v=\"16\"></span><span class=\"yv-vlbl\">16</span>For God so loved the world.</div></div>"}"#;
+
+    fn yv_scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("br-yv-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// Add Bible 777 to the user's list and point the YouVersion client at
+    /// `host`. An unroutable host makes any real request fail fast, offline.
+    fn add_yv_bible(cx: &mut App, dir: &std::path::Path, host: &str) -> bible_youversion::Cache {
+        let cache = bible_youversion::Cache::new(dir);
+        let client = bible_youversion::Client::with_host("test-key", host);
+        cx.set_global(remote::Remote::with_source(bible_youversion::Source::new(
+            client,
+            cache.clone(),
+        )));
+        cx.update_global::<Settings, _>(|s, _| {
+            s.youversion.bibles.push(crate::library::SavedBible {
+                id: YV_ID,
+                abbrev: "YVT".into(),
+                name: "YouVersion Test".into(),
+                copyright: "© Example Publisher".into(),
+            });
+        });
+        cache
+    }
+
+    #[gpui_kit::test]
+    fn youversion_chapter_loads_from_cache_without_a_request(cx: &mut TestAppContext) {
+        let dir = yv_scratch("cached");
+        let d = dir.clone();
+        let Some((_, view)) = open_with(cx, move |cx| {
+            let cache = add_yv_bible(cx, &d, "127.0.0.1:9");
+            cache.put("passage:777:JHN.3:html", YV_JOHN_3).unwrap();
+        }) else {
+            return;
+        };
+        view.update(cx, |v, cx| {
+            v.go_to(ChapterRef::new(43, 3), None, cx);
+            v.set_translation(crate::library::remote_key(YV_ID), cx);
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            let content = v.focused_content().expect("content");
+            assert!(content.load == Load::Ready);
+            assert_eq!(content.blocks.len(), 2);
+        });
+        let requests = cx.read(|cx| cx.global::<remote::Remote>().requests_made());
+        assert_eq!(requests, 0, "a cached chapter must not touch the network");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[gpui_kit::test]
+    fn youversion_chapter_shows_loading_then_a_clear_error_offline(cx: &mut TestAppContext) {
+        let dir = yv_scratch("offline");
+        let d = dir.clone();
+        let Some((_, view)) = open_with(cx, move |cx| {
+            add_yv_bible(cx, &d, "127.0.0.1:9");
+        }) else {
+            return;
+        };
+        view.update(cx, |v, cx| {
+            v.go_to(ChapterRef::new(43, 3), None, cx);
+            v.set_translation(crate::library::remote_key(YV_ID), cx);
+            // Not cached: the pane is loading until the fetch answers.
+            assert!(v.focused_content().expect("content").load == Load::Loading);
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            match &v.focused_content().expect("content").load {
+                Load::Failed { message, setup } => {
+                    assert!(message.contains("Couldn't reach YouVersion"), "{message}");
+                    assert!(!setup);
+                }
+                _ => panic!("expected a failed load"),
+            }
+        });
+        // Try again goes back to loading.
+        view.update(cx, |v, cx| {
+            v.retry_pane(false, cx);
+            assert!(v.focused_content().expect("content").load == Load::Loading);
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[gpui_kit::test]
+    fn removing_a_youversion_bible_moves_its_panes_back(cx: &mut TestAppContext) {
+        let dir = yv_scratch("remove");
+        let d = dir.clone();
+        let Some((_, view)) = open_with(cx, move |cx| {
+            let cache = add_yv_bible(cx, &d, "127.0.0.1:9");
+            cache.put("passage:777:JHN.1:html", YV_JOHN_3).unwrap();
+        }) else {
+            return;
+        };
+        view.update(cx, |v, cx| {
+            v.set_translation(crate::library::remote_key(YV_ID), cx)
+        });
+        cx.update(|cx| {
+            cx.update_global::<Settings, _>(|s, _| s.youversion.bibles.clear());
+        });
+        cx.run_until_parked();
+        let first = cx.read(|cx| cx.global::<Library>().translations[0].info.abbrev.clone());
+        view.read_with(cx, |v, _| assert_eq!(v.tab().translation, first));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[gpui_kit::test]
+    fn copy_from_youversion_cites_the_version_and_its_copyright(cx: &mut TestAppContext) {
+        let dir = yv_scratch("copy");
+        let d = dir.clone();
+        let Some((_, view)) = open_with(cx, move |cx| {
+            let cache = add_yv_bible(cx, &d, "127.0.0.1:9");
+            cache.put("passage:777:JHN.3:html", YV_JOHN_3).unwrap();
+        }) else {
+            return;
+        };
+        view.update(cx, |v, cx| {
+            v.go_to(ChapterRef::new(43, 3), None, cx);
+            v.set_translation(crate::library::remote_key(YV_ID), cx);
+        });
+        let text = view.read_with(cx, |v, cx| {
+            copy_text(
+                cx,
+                v.focused_content(),
+                &v.tab().translation,
+                ChapterRef::new(43, 3),
+                Some(VerseId::new(43, 3, 16)),
+            )
+        });
+        let text = text.expect("copy text");
+        assert!(
+            text.starts_with("“For God so loved the world.” — John 3:16 (YVT)"),
+            "{text}"
+        );
+        assert!(text.contains("© Example Publisher"));
+        assert!(text.contains("YouVersion"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[gpui_kit::test]
+    fn youversion_search_is_opt_in_and_served_from_cache(cx: &mut TestAppContext) {
+        let dir = yv_scratch("search");
+        let d = dir.clone();
+        let Some((window, view)) = open_with(cx, move |cx| {
+            let cache = add_yv_bible(cx, &d, "127.0.0.1:9");
+            cache
+                .put(
+                    "search:777:love:6:",
+                    r#"{"verses":[{"reference":"JHN.3.16"}],"next_page_token":null}"#,
+                )
+                .unwrap();
+            cache
+                .put(
+                    "passage:777:JHN.3.16:text",
+                    r#"{"content":"For God so loved the world."}"#,
+                )
+                .unwrap();
+        }) else {
+            return;
+        };
+        with_window(window, cx, |window, cx| {
+            view.update(cx, |v, cx| {
+                v.open_search_page(
+                    &crate::palette::OpenSearchPage {
+                        query: "love".into(),
+                    },
+                    window,
+                    cx,
+                )
+            });
+        });
+        // Local search ran by itself; YouVersion has not been asked anything.
+        view.read_with(cx, |v, _| {
+            let page = v.search.as_ref().expect("search page");
+            assert!(page.yv.state == search_page::YvState::Idle);
+            assert!(
+                !page.entries.is_empty(),
+                "bundled translations answer first"
+            );
+        });
+        view.update(cx, |v, cx| v.search_yv(false, cx));
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            let page = v.search.as_ref().expect("search page");
+            assert!(page.yv.state == search_page::YvState::Done);
+            assert_eq!(page.yv.entries.len(), 1);
+            assert_eq!(page.yv.entries[0].text, "For God so loved the world.");
+            assert_eq!(page.yv.requests_used, 0, "all from cache");
+        });
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

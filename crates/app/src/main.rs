@@ -6,9 +6,11 @@ mod keymap;
 mod library;
 mod palette;
 mod reader;
+mod remote;
 mod selectable;
 mod settings_window;
 mod shortcuts_window;
+mod sources_page;
 mod suggestions;
 mod tabs;
 mod translation_picker;
@@ -111,118 +113,130 @@ fn main() {
         }
     };
 
-    gpui_kit::application()
+    let app = gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
-        .with_quit_mode(QuitMode::Explicit)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            fonts::register(cx);
-            cx.set_global(library);
-            cx.set_global(Settings::load());
-            cx.set_global(MainWindow(None, None));
-            cx.set_global(settings_window::SettingsWindow(None));
-            cx.set_global(shortcuts_window::ShortcutsWindow(None));
-
-            bind_keys(cx);
-            cx.on_action(|_: &Quit, cx| cx.quit());
-            cx.on_action(|_: &OpenReader, cx| open_reader(None, cx));
-            cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
-            cx.on_action(|_: &OpenShortcuts, cx| shortcuts_window::open(cx));
-            cx.on_action(|_: &OpenVerseOfTheDay, cx| open_reader(Some(verse_of_the_day()), cx));
-            cx.on_action(tray::copy_verse_of_the_day);
-            cx.on_action(|action: &SetAppearance, cx| set_appearance(action.appearance, cx));
-            cx.on_action(|action: &SetFontPairing, cx| {
-                cx.update_global::<Settings, _>(|s, _| {
-                    s.font_pairing = action.pairing;
-                    s.save();
-                });
-            });
-            cx.on_action(|_: &ToggleDark, cx| {
-                let dark = gpui_kit::component::Theme::global(cx).mode.is_dark();
-                set_appearance(
-                    if dark {
-                        Appearance::Light
-                    } else {
-                        Appearance::Dark
-                    },
-                    cx,
-                );
-            });
-            cx.set_menus([
-                Menu::new("Bible Reader").items([
-                    MenuItem::action("Settings…", OpenSettings),
-                    MenuItem::separator(),
-                    MenuItem::action("Copy Verse of the Day", CopyVerseOfTheDay),
-                    MenuItem::separator(),
-                    MenuItem::action("Quit Bible Reader", Quit),
-                ]),
-                Menu::new("File").items([
-                    MenuItem::action("New Tab", NewTab),
-                    MenuItem::action("Reopen Closed Tab", ReopenClosedTab),
-                    MenuItem::separator(),
-                    MenuItem::action("Close Tab", CloseTab),
-                    MenuItem::action("Close Window", CloseWindow),
-                ]),
-                Menu::new("Edit").items([
-                    MenuItem::action("Copy", gpui_kit::base::input::Copy),
-                    MenuItem::action("Copy Verse with Citation", CopyVerse),
-                    MenuItem::action("Copy Chapter", CopyChapter),
-                ]),
-                Menu::new("Go").items([
-                    MenuItem::action("Go to Passage or Search…", OpenPalette),
-                    MenuItem::action("Commands…", OpenCommands),
-                    MenuItem::action(
-                        "Search Results…",
-                        palette::OpenSearchPage {
-                            query: String::new(),
-                        },
-                    ),
-                    MenuItem::separator(),
-                    MenuItem::action("Next Chapter", NextChapter),
-                    MenuItem::action("Previous Chapter", PrevChapter),
-                    MenuItem::separator(),
-                    MenuItem::action("Back", GoBack),
-                    MenuItem::action("Forward", GoForward),
-                ]),
-                Menu::new("View").items([
-                    MenuItem::action("Toggle Sidebar", ToggleSidebar),
-                    MenuItem::action("Focus Sidebar", FocusSidebar),
-                    MenuItem::separator(),
-                    MenuItem::action("Split Right / Unsplit", ToggleSplit),
-                    MenuItem::action("Close Pane", ClosePane),
-                    MenuItem::action("Focus Left Pane", FocusLeftPane),
-                    MenuItem::action("Focus Right Pane", FocusRightPane),
-                    MenuItem::separator(),
-                    MenuItem::action("Toggle Notes", ToggleInspector),
-                    MenuItem::action("Toggle Red Letter", ToggleRedLetter),
-                    MenuItem::action("Toggle Verse Numbers", ToggleVerseNumbers),
-                    MenuItem::action("Toggle Dark Mode", ToggleDark),
-                    MenuItem::submenu(
-                        Menu::new("Theme").items(
-                            Appearance::ALL.map(|a| {
-                                MenuItem::action(a.label(), SetAppearance { appearance: a })
-                            }),
-                        ),
-                    ),
-                    MenuItem::separator(),
-                    MenuItem::action("Larger Text", IncreaseFont),
-                    MenuItem::action("Smaller Text", DecreaseFont),
-                    MenuItem::action("Actual Size", ResetFont),
-                ]),
-                Menu::new("Window").items([
-                    MenuItem::action("Show Next Tab", NextTab),
-                    MenuItem::action("Show Previous Tab", PrevTab),
-                ]),
-                Menu::new("Help").items([MenuItem::action("Keyboard Shortcuts", OpenShortcuts)]),
-            ]);
-
-            if let Err(err) = tray::install(cx) {
-                eprintln!("warning: menu bar item unavailable: {err}");
+        .with_quit_mode(QuitMode::Explicit);
+    // The sign-in redirect (`youversionauth://callback?...`) arrives here, on
+    // the main thread but with no `App`; pass it on to the app below.
+    let (url_tx, url_rx) = async_channel::unbounded::<Vec<String>>();
+    app.on_open_urls(move |urls| {
+        let _ = url_tx.try_send(urls);
+    });
+    app.run(move |cx| {
+        gpui_kit::init(cx);
+        fonts::register(cx);
+        cx.set_global(library);
+        cx.set_global(Settings::load());
+        remote::init(cx);
+        cx.spawn(async move |cx| {
+            while let Ok(urls) = url_rx.recv().await {
+                cx.update(|cx| remote::handle_urls(urls, cx));
             }
-            open_reader(None, cx);
-            #[cfg(feature = "screenshot")]
-            screenshot::run_if_requested(cx);
+        })
+        .detach();
+        cx.set_global(MainWindow(None, None));
+        cx.set_global(settings_window::SettingsWindow(None));
+        cx.set_global(shortcuts_window::ShortcutsWindow(None));
+
+        bind_keys(cx);
+        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_action(|_: &OpenReader, cx| open_reader(None, cx));
+        cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
+        cx.on_action(|_: &OpenShortcuts, cx| shortcuts_window::open(cx));
+        cx.on_action(|_: &OpenVerseOfTheDay, cx| open_reader(Some(verse_of_the_day()), cx));
+        cx.on_action(tray::copy_verse_of_the_day);
+        cx.on_action(|action: &SetAppearance, cx| set_appearance(action.appearance, cx));
+        cx.on_action(|action: &SetFontPairing, cx| {
+            cx.update_global::<Settings, _>(|s, _| {
+                s.font_pairing = action.pairing;
+                s.save();
+            });
         });
+        cx.on_action(|_: &ToggleDark, cx| {
+            let dark = gpui_kit::component::Theme::global(cx).mode.is_dark();
+            set_appearance(
+                if dark {
+                    Appearance::Light
+                } else {
+                    Appearance::Dark
+                },
+                cx,
+            );
+        });
+        cx.set_menus([
+            Menu::new("Bible Reader").items([
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::separator(),
+                MenuItem::action("Copy Verse of the Day", CopyVerseOfTheDay),
+                MenuItem::separator(),
+                MenuItem::action("Quit Bible Reader", Quit),
+            ]),
+            Menu::new("File").items([
+                MenuItem::action("New Tab", NewTab),
+                MenuItem::action("Reopen Closed Tab", ReopenClosedTab),
+                MenuItem::separator(),
+                MenuItem::action("Close Tab", CloseTab),
+                MenuItem::action("Close Window", CloseWindow),
+            ]),
+            Menu::new("Edit").items([
+                MenuItem::action("Copy", gpui_kit::base::input::Copy),
+                MenuItem::action("Copy Verse with Citation", CopyVerse),
+                MenuItem::action("Copy Chapter", CopyChapter),
+            ]),
+            Menu::new("Go").items([
+                MenuItem::action("Go to Passage or Search…", OpenPalette),
+                MenuItem::action("Commands…", OpenCommands),
+                MenuItem::action(
+                    "Search Results…",
+                    palette::OpenSearchPage {
+                        query: String::new(),
+                    },
+                ),
+                MenuItem::separator(),
+                MenuItem::action("Next Chapter", NextChapter),
+                MenuItem::action("Previous Chapter", PrevChapter),
+                MenuItem::separator(),
+                MenuItem::action("Back", GoBack),
+                MenuItem::action("Forward", GoForward),
+            ]),
+            Menu::new("View").items([
+                MenuItem::action("Toggle Sidebar", ToggleSidebar),
+                MenuItem::action("Focus Sidebar", FocusSidebar),
+                MenuItem::separator(),
+                MenuItem::action("Split Right / Unsplit", ToggleSplit),
+                MenuItem::action("Close Pane", ClosePane),
+                MenuItem::action("Focus Left Pane", FocusLeftPane),
+                MenuItem::action("Focus Right Pane", FocusRightPane),
+                MenuItem::separator(),
+                MenuItem::action("Toggle Notes", ToggleInspector),
+                MenuItem::action("Toggle Red Letter", ToggleRedLetter),
+                MenuItem::action("Toggle Verse Numbers", ToggleVerseNumbers),
+                MenuItem::action("Toggle Dark Mode", ToggleDark),
+                MenuItem::submenu(
+                    Menu::new("Theme").items(
+                        Appearance::ALL
+                            .map(|a| MenuItem::action(a.label(), SetAppearance { appearance: a })),
+                    ),
+                ),
+                MenuItem::separator(),
+                MenuItem::action("Larger Text", IncreaseFont),
+                MenuItem::action("Smaller Text", DecreaseFont),
+                MenuItem::action("Actual Size", ResetFont),
+            ]),
+            Menu::new("Window").items([
+                MenuItem::action("Show Next Tab", NextTab),
+                MenuItem::action("Show Previous Tab", PrevTab),
+            ]),
+            Menu::new("Help").items([MenuItem::action("Keyboard Shortcuts", OpenShortcuts)]),
+        ]);
+
+        if let Err(err) = tray::install(cx) {
+            eprintln!("warning: menu bar item unavailable: {err}");
+        }
+        open_reader(None, cx);
+        #[cfg(feature = "screenshot")]
+        screenshot::run_if_requested(cx);
+    });
 }
 
 /// Dev-only: drive the UI from env vars and save an offscreen render.
@@ -268,6 +282,12 @@ mod screenshot {
         let target = match std::env::var("BIBLE_READER_SCREENSHOT_WINDOW").as_deref() {
             Ok("settings") => {
                 settings_window::open(cx);
+                cx.global::<settings_window::SettingsWindow>()
+                    .0
+                    .unwrap_or(window)
+            }
+            Ok("sources") => {
+                settings_window::open_sources(cx);
                 cx.global::<settings_window::SettingsWindow>()
                     .0
                     .unwrap_or(window)
