@@ -140,12 +140,14 @@ Authorize at `https://api.youversion.com/auth/authorize` (`response_type=code`, 
 4. **Rate limit** (reported as 200 requests/hour until the app is live). Settings shows "N API requests this session".
 
 ### Spending fewer API requests (2026-10-11)
-What the docs say: the passages endpoint takes a USFM id; a chapter is `GEN.1`; one third-party mirror of the React SDK docs lists `GEN.1-2` (several chapters) as valid, another source says ranges must stay inside one chapter, and a whole book (`JHN`) is not documented anywhere. YouVersion's own Swift SDK fetches one chapter per request and never ranges. The docs do advise one passage request over many verse requests. No numeric size limit is published (the unrelated API.Bible service truncates at 200 verses). So whole-book downloads are **unverified**; `examples/probe.rs` measures it with your key (about 8 requests, prints sizes and counts only, writes nothing).
+**Measured result (Bible 3034, via `examples/probe.rs`): the API serves one chapter per request.** `JHN.3` works (36 verses, about 8 KB). `JHN.3-4`, `JHN.3-5`, `JHN.3-7`, `JHN.1-10`, `JHN.1-21`, `JHN` and `JHN.3.30-4.5` all answer 404. So a whole book costs one request per chapter (John: 21), and there is no way to batch neighbours. I had built a multi-chapter window on the strength of a third-party doc page; it was removed once the probe came back, rather than leaving code that only wastes requests on a 404.
 
-What was built to save requests, safe whatever the probe says:
-- **Window fetch:** a miss on chapter N asks for N and up to two neighbours in one request, in the direction you are reading (forward, backward, or both for a jump), under 140 verses, never across a book. The reply is split into chapters and cached individually. It is only trusted if it splits into exactly the chapters requested; otherwise the window shrinks for 30 days (3 -> 2 -> 1), costing at most two extra requests per Bible per month. Real errors (offline, 403, 429) never trigger a retry.
+What saves requests instead:
+- **Cache:** 30 days, so every chapter is fetched at most once a month. This is the big one.
+- **Wait and skip:** a fetch waits 200 ms and is dropped if you already left the chapter, so holding ⌘] across ten chapters costs nothing.
 - **Single-flight:** the same chapter asked for twice at once (both panes, a fast double page turn) is one request.
-- **Wait and skip:** a fetch waits 200 ms and is dropped if you already left the chapter, so holding ⌘] costs nothing.
-- **Search:** verse text comes from whole chapters, so results in one chapter share a request, chapters you already read are free, and opening a result is instant.
-- **Catalog:** the cache key includes signed-in state, so signing in re-fetches the list (before, it would have shown the cached signed-out one and never reported new Bibles).
-- Not worth doing: `page_size=_` for the catalog (only with 3 or fewer fields, which drops the copyright we must show), and speculative background prefetch (it only adds requests; the window already gets the next chapters at no extra cost).
+- **Search:** verse text comes from whole chapters, so results in one chapter share a request, chapters already read are free, and opening a result is instant (before: one request per verse).
+- **Catalog:** the cache key includes signed-in state, so signing in re-fetches the list (otherwise the cached signed-out list would hide anything signing in adds).
+- **Deliberately not done:** speculative prefetch of the next chapter (it can only add requests; the cost is a skeleton for a moment on a first read), and `page_size=_` for the catalog (only allowed with 3 or fewer fields, which drops the copyright we must show).
+
+If request budget turns out to matter (the reported 200/hour until the app is live), the remaining lever is a deliberate "download this book" action that spends one request per chapter on purpose, with progress and a cap, rather than hidden prefetching. Not built.
