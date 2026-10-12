@@ -179,17 +179,26 @@ impl Tab {
     }
 
     /// What the tab shows: its custom name, or "John 3 · BSB".
+    #[cfg(test)]
     pub fn label(&self) -> String {
+        self.label_with(|key| key.to_string())
+    }
+
+    /// `label`, with each translation key shown through `name` (e.g. "yv:111" -> "NIV").
+    pub fn label_with(&self, name: impl Fn(&str) -> String) -> String {
         match (&self.name, &self.side) {
-            (Some(name), _) => name.clone(),
-            (None, Some(side)) => format!("{}  |  {}", self.pane_label(), side.pane_label()),
-            (None, None) => self.pane_label(),
+            (Some(custom), _) => custom.clone(),
+            (None, Some(side)) => format!(
+                "{}  |  {}",
+                self.pane_label_with(&name),
+                side.pane_label_with(&name)
+            ),
+            (None, None) => self.pane_label_with(&name),
         }
     }
 
-    /// "John 3 · BSB"
-    pub fn pane_label(&self) -> String {
-        format!("{} · {}", self.title(), self.translation)
+    fn pane_label_with(&self, name: impl Fn(&str) -> String) -> String {
+        format!("{} · {}", self.title(), name(&self.translation))
     }
 
     /// Set the custom name; blank clears it.

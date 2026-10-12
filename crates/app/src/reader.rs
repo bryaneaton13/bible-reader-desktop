@@ -904,8 +904,8 @@ impl ReaderView {
         self.activate_tab(&ActivateTab { index }, window, cx);
     }
 
-    fn tab_title(&self, tab: &Tab) -> String {
-        tab.label()
+    fn tab_title(&self, tab: &Tab, cx: &App) -> String {
+        tab.label_with(|key| source_label(cx, key))
     }
 
     // MARK: Split panes
@@ -1198,7 +1198,7 @@ impl ReaderView {
         let context = palette::Context {
             current: self.chapter(),
             active_tab: self.active,
-            tabs: self.tabs.iter().map(|t| self.tab_title(t)).collect(),
+            tabs: self.tabs.iter().map(|t| self.tab_title(t, cx)).collect(),
             split: self.tabs[self.active].is_split(),
             recent: &settings.recent,
             translations: sources(cx),
@@ -2156,7 +2156,7 @@ impl ReaderView {
             .search_placeholder("Search translations…")
             .accessibility_label("Translation");
         let label = pane.title();
-        let ghost = pane.pane_label();
+        let ghost = pane.label_with(|key| source_label(cx, key));
         div()
             .id(pane_id("pane-header", right))
             .flex()
@@ -2268,7 +2268,7 @@ impl ReaderView {
                 let selected = tab.focus_side == right;
                 switcher = switcher.child(
                     Button::new(pane_id("pane-switch", right))
-                        .label(pane.pane_label())
+                        .label(pane.label_with(|key| source_label(cx, key)))
                         .small()
                         .ghost()
                         .selected(selected)
@@ -2724,7 +2724,7 @@ impl ReaderView {
             let selected = ix == self.active;
             let pinned = tab.pinned;
             let split = tab.is_split();
-            let label = self.tab_title(tab);
+            let label = self.tab_title(tab, cx);
             let ghost = label.clone();
             strip = strip.child(
                 div()
@@ -3311,28 +3311,28 @@ mod tests {
         view.update(cx, |v, cx| v.go_to(ChapterRef::new(45, 8), None, cx));
         press("cmd-1", cx);
         cx.run_until_parked();
-        view.read_with(cx, |v, _| {
+        view.read_with(cx, |v, app| {
             assert_eq!(v.tabs.len(), 2);
             assert_eq!(v.active, 1);
-            assert_eq!(v.tab_title(v.tab()), "Romans 8 · BSB");
+            assert_eq!(v.tab_title(v.tab(), app), "Romans 8 · BSB");
         });
 
         // The tab bar appears with two tabs; clicking the first switches back.
         with_window(window, cx, |window, cx| {
             window.dispatch_action(Box::new(ActivateTab { index: 0 }), cx)
         });
-        view.read_with(cx, |v, _| {
+        view.read_with(cx, |v, app| {
             assert_eq!(v.active, 0);
-            assert_eq!(v.tab_title(v.tab()), "Psalms 23 · KJV");
+            assert_eq!(v.tab_title(v.tab(), app), "Psalms 23 · KJV");
         });
 
         // Close it, then bring it back with ⇧⌘T.
         press("cmd-w", cx);
         view.read_with(cx, |v, _| assert_eq!(v.tabs.len(), 1));
         press("cmd-shift-t", cx);
-        view.read_with(cx, |v, _| {
+        view.read_with(cx, |v, app| {
             assert_eq!(v.tabs.len(), 2);
-            assert_eq!(v.tab_title(v.tab()), "Psalms 23 · KJV");
+            assert_eq!(v.tab_title(v.tab(), app), "Psalms 23 · KJV");
         });
 
         // Tabs are saved for the next launch.
