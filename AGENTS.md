@@ -156,6 +156,19 @@ screencapture -x -o -l <window-number> /tmp/live.png   # needs Screen Recording 
 
 Live capture and synthetic input (`osascript ... keystroke`, `cliclick`) need Screen Recording and Accessibility permissions, an unlocked screen, and the window on screen. GPUI exposes no accessibility tree, so AppleScript can't find buttons. Prefer steps 2 and 3. The live app also uses your real settings file.
 
+## Releasing
+
+Versions follow SemVer (`0.MINOR.PATCH` until 1.0). The one source of truth is `[workspace.package] version` in `Cargo.toml`; `scripts/bundle.sh` and the Settings sidebar read it. [`CHANGELOG.md`](CHANGELOG.md) uses the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
+
+- **While working:** add a user-facing line under `## [Unreleased]` for each change, in `Added` / `Changed` / `Deprecated` / `Removed` / `Fixed` / `Security`. Write for people who use the app, not for the diff. Skip refactors and test-only changes.
+- **Cutting a release:** on `main` with a clean tree and passing checks:
+  1. Rename `[Unreleased]` content to `## [X.Y.Z] - YYYY-MM-DD` and leave an empty `## [Unreleased]` above it.
+  2. Update the compare links at the bottom of the changelog.
+  3. Set `version` in `Cargo.toml`, then `cargo update -w --offline` so `Cargo.lock` follows.
+  4. Commit `Release X.Y.Z` and push.
+  5. Tag by hand: `git tag -a vX.Y.Z -m "Bible Reader X.Y.Z" && git push origin vX.Y.Z`.
+- There is no CI or automated release; tags are created manually. Do not tag without being asked.
+
 ## Gotchas learned the hard way
 
 - **Search:** Misspellings are fixed before searching (`bible-store/src/fuzzy.rs`): first the curated list `misspellings.txt` (`wrong right` per line), then the nearest word in the translation's vocabulary (edit distance 1 for 4-5 letters, 2 for longer; the word still being typed is left alone). `Results.corrected` drives the "Showing results for" note. `bible_store::search` blends bm25 over a porter-stemmed FTS5 index with topic membership (`study.db`), exact phrases and verse popularity (cross-reference votes). Quotes make a phrase, `-word` excludes. Topic aliases live in `data/sources/openbible/aliases.txt`; topic names to skip live in `drop.txt` (reviewed list: people, places, typos, trivia). The importer merges openbible.info, Torrey's and Nave's by stemmed name (a verse several sources list ranks higher), drops proper-name topics via capitalization in the BSB/KJV text, and turns Nave's "See X" entries into aliases. It writes `data/build/study-topics.txt` (every kept topic: origin, passages, corroboration) for auditing. The FTS tokenizer changed, so rebuild data after pulling (`cargo run --release -p bible-import`). Eyeball ranking with `cargo run -q --release -p bible-store --example probe -- "pride"`. `study.db` has the `.db` extension on purpose: `Library::load` treats every `*.sqlite` as a translation. The search page is a mode of the window (`ReaderView.search`), not a tab; `show_active` closes it, and ⌘Enter opens tabs behind it with `open_in_background_tab`.

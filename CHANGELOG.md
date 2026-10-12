@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.2.0 (2026-10-12)
+All notable changes to Bible Reader are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (`0.MINOR.PATCH` until 1.0).
+
+## [Unreleased]
+
+## [0.2.0] - 2026-10-12
 
 Bible Reader can now read the NIV and other licensed translations from YouVersion, using your own app key. The bundled translations and the offline experience are unchanged.
 
@@ -19,15 +23,17 @@ Bible Reader can now read the NIV and other licensed translations from YouVersio
 - **Fewer API requests.** Chapters are cached for 30 days, duplicate requests are shared, and a fetch is dropped if you move on within 200 ms. Verse search results reuse whole cached chapters. The API serves one chapter per request, so there is no batching or prefetching.
 - Search page uses virtualized lists and line spacing is adjustable.
 - The app is no longer strictly offline: it makes network calls only if you add a YouVersion key.
+- NIV use is governed by Biblica's license and YouVersion's terms through your own platform account. The 30-day plain-text cache and whole-chapter copy follow the choices recorded in `docs/06-youversion-platform.md`; revisit them before sharing the app widely.
+- Rebuild data after pulling if you build from source: `cargo run --release -p bible-import`.
 
 ### Fixed
 - Alternate verse numbers no longer leak into text for some Bibles.
 - Transient YouVersion 5xx errors are retried twice.
 
-### Notes
-- NIV use is governed by Biblica's license and YouVersion's terms through your own platform account. The 30-day plain-text cache and whole-chapter copy follow the choices recorded in `docs/06-youversion-platform.md`; revisit them before sharing the app widely.
-- Rebuild data after pulling if you build from source: `cargo run --release -p bible-import`.
-
-## 0.1.0
+## [0.1.0]
 
 First release: BSB, KJV and WEB offline, topical search, cross-references, tabs, split view, themes and font pairings.
+
+[Unreleased]: https://github.com/bryaneaton13/bible-reader-desktop/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/bryaneaton13/bible-reader-desktop/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/bryaneaton13/bible-reader-desktop/releases/tag/v0.1.0
