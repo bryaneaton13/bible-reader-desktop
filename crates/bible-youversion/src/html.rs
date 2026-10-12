@@ -10,7 +10,7 @@
 use bible_core::{Block, BlockKind, ChapterRef, Note, NoteKind, Span, TextStyle, VerseId};
 
 /// A chapter ready to render.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Chapter {
     pub blocks: Vec<Block>,
     pub notes: Vec<Note>,
@@ -506,6 +506,85 @@ pub fn parse_chapter(html: &str, chapter: ChapterRef) -> Chapter {
     }
 }
 
+/// Parse a multi-chapter passage (`JHN.3-5`) into its chapters.
+///
+/// The markup carries no chapter labels we can trust, so chapters are found
+/// where verse numbering starts over at 1. `None` unless exactly `expected`
+/// chapters come out and each opens with verse 1: anything else means the
+/// response wasn't what we asked for, and the caller must not trust it.
+pub fn parse_chapters(html: &str, book: u8, first: u16, expected: usize) -> Option<Vec<Chapter>> {
+    let whole = parse_chapter(html, ChapterRef::new(book, first));
+    let mut chapters: Vec<Vec<Block>> = vec![Vec::new()];
+    let mut seen_verse = false;
+    for block in whole.blocks {
+        let mut current = Block::new(block.kind.clone());
+        for span in block.spans {
+            if matches!(span, Span::Verse { num: 1, .. }) && seen_verse {
+                let at_block_start = current.is_empty();
+                if !at_block_start || current.kind == BlockKind::Blank {
+                    chapters.last_mut()?.push(current);
+                }
+                current = Block::new(block.kind.clone());
+                let mut carried = Vec::new();
+                if at_block_start {
+                    // Section headings just before verse 1 belong to the new chapter.
+                    let previous = chapters.last_mut()?;
+                    while previous.last().is_some_and(|b| b.kind.is_heading()) {
+                        carried.insert(0, previous.pop()?);
+                    }
+                }
+                chapters.push(carried);
+            }
+            if matches!(span, Span::Verse { .. }) {
+                seen_verse = true;
+            }
+            current.spans.push(span);
+        }
+        if !current.is_empty() || current.kind == BlockKind::Blank {
+            chapters.last_mut()?.push(current);
+        }
+    }
+    if chapters.len() != expected {
+        return None;
+    }
+    let mut out = Vec::with_capacity(expected);
+    for (i, blocks) in chapters.into_iter().enumerate() {
+        let opens_at_one = blocks.iter().flat_map(|b| &b.spans).find_map(|s| match s {
+            Span::Verse { num, .. } => Some(*num),
+            _ => None,
+        }) == Some(1);
+        if !opens_at_one {
+            return None;
+        }
+        out.push(renumber_notes(blocks, &whole.notes, book, first + i as u16));
+    }
+    Some(out)
+}
+
+/// Give a chapter cut from a longer passage its own note ids (1, 2, ...) and
+/// its own chapter number on each note.
+fn renumber_notes(mut blocks: Vec<Block>, notes: &[Note], book: u8, chapter: u16) -> Chapter {
+    let mut kept: Vec<Note> = Vec::new();
+    for span in blocks.iter_mut().flat_map(|b| b.spans.iter_mut()) {
+        if let Span::Note { id } = span
+            && let Some(old) = notes.iter().find(|n| n.id == *id)
+        {
+            let new_id = kept.len() as u32 + 1;
+            kept.push(Note {
+                id: new_id,
+                kind: old.kind,
+                verse: VerseId::new(book, chapter, old.verse.verse()),
+                text: old.text.clone(),
+            });
+            *id = new_id;
+        }
+    }
+    Chapter {
+        blocks,
+        notes: kept,
+    }
+}
+
 /// Plain text of a chapter's verses, for copy: `(verse, text)` in order.
 /// Merged ranges are keyed by their first verse.
 pub fn verse_texts(blocks: &[Block]) -> Vec<(u16, String)> {
@@ -671,6 +750,50 @@ mod tests {
         assert_eq!(verses[0].0, 14);
         assert!(verses[1].1.starts_with("For God so loved the world"));
         assert!(verses[1].1.ends_with("but have everlasting life."));
+    }
+
+    // Three short chapters in one passage: verse numbering restarts at 1.
+    const THREE: &str = r#"<div><div class="s1">One</div><div class="p"><span class="yv-v" v="1"></span><span class="yv-vlbl">1</span>First a.<span class="yv-n f"><span class="ft">Note a.</span></span> <span class="yv-v" v="2"></span><span class="yv-vlbl">2</span>First b.</div><div class="s1">Two</div><div class="p"><span class="yv-v" v="1"></span><span class="yv-vlbl">1</span>Second a.<span class="yv-n f"><span class="ft">Note b.</span></span> <span class="yv-v" v="2"></span><span class="yv-vlbl">2</span>Second b.</div><div class="p"><span class="yv-v" v="1"></span><span class="yv-vlbl">1</span>Third a. <span class="yv-v" v="2"></span><span class="yv-vlbl">2</span>Third b.</div></div>"#;
+
+    #[test]
+    fn splits_a_multi_chapter_passage_at_verse_restarts() {
+        let chapters = parse_chapters(THREE, 43, 3, 3).expect("three chapters");
+        assert_eq!(chapters.len(), 3);
+        // The heading before each chapter's verse 1 travels with that chapter.
+        assert_eq!(chapters[0].blocks[0].kind, BlockKind::Heading(1));
+        assert_eq!(chapters[1].blocks[0].kind, BlockKind::Heading(1));
+        assert!(matches!(
+            &chapters[1].blocks[0].spans[0],
+            Span::Text { text, .. } if text == "Two"
+        ));
+        assert_eq!(chapters[2].blocks.len(), 1);
+        // Notes restart at 1 and carry the right chapter.
+        assert_eq!(chapters[0].notes.len(), 1);
+        assert_eq!(chapters[0].notes[0].verse, VerseId::new(43, 3, 1));
+        assert_eq!(chapters[1].notes.len(), 1);
+        assert_eq!(chapters[1].notes[0].id, 1);
+        assert_eq!(chapters[1].notes[0].verse, VerseId::new(43, 4, 1));
+        assert!(chapters[1].blocks[1].spans.contains(&Span::Note { id: 1 }));
+        assert!(chapters[2].notes.is_empty());
+    }
+
+    #[test]
+    fn a_split_that_does_not_match_the_request_is_rejected() {
+        // Asked for two chapters, got three: don't guess.
+        assert!(parse_chapters(THREE, 43, 3, 2).is_none());
+        assert!(parse_chapters(THREE, 43, 3, 4).is_none());
+        // One chapter returned for a multi-chapter request.
+        assert!(parse_chapters(PSALM_23, 19, 23, 3).is_none());
+        // Not starting at verse 1.
+        let late = r#"<div class="p"><span class="yv-v" v="5"></span>Mid-chapter.</div>"#;
+        assert!(parse_chapters(late, 43, 3, 1).is_none());
+        assert!(parse_chapters("", 43, 3, 1).is_none());
+    }
+
+    #[test]
+    fn a_single_chapter_passes_through_unchanged() {
+        let split = parse_chapters(PSALM_23, 19, 23, 1).expect("one chapter");
+        assert_eq!(split[0], parse_chapter(PSALM_23, ChapterRef::new(19, 23)));
     }
 
     #[test]

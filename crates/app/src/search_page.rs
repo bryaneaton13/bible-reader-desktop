@@ -377,9 +377,16 @@ impl ReaderView {
             let before = source.client().requests_made();
             let found = source.search(bible, &search_query, YV_PAGE, token.as_deref())?;
             let mut entries = Vec::new();
+            // Verse text comes from whole chapters: results in the same chapter
+            // share one request, cached chapters cost nothing, and opening a
+            // result afterwards is instant.
             for verse in found.value.verses.iter().copied().take(YV_PAGE as usize) {
-                let text = match source.verse_text(bible, verse) {
-                    Ok(fetched) => fetched.value,
+                let text = match source.chapter(bible, verse.chapter_ref()) {
+                    Ok(fetched) => bible_youversion::verse_texts(&fetched.value.blocks)
+                        .into_iter()
+                        .find(|(v, _)| *v == verse.verse())
+                        .map(|(_, text)| text)
+                        .unwrap_or_default(),
                     // Stop early on errors that will repeat for every verse.
                     Err(
                         err @ (bible_youversion::Error::RateLimited { .. }
@@ -540,7 +547,7 @@ impl ReaderView {
             YvState::Idle => {
                 card = card
                     .child(div().text_sm().text_color(muted).child(format!(
-                        "Searches {label} on YouVersion. Uses 1 request to search plus up to {YV_PAGE} to show the verses. Results are cached for 30 days."
+                        "Searches {label} on YouVersion. Uses 1 request to search, plus one for each chapter it needs to show the verses (none if you have read them already). Results are cached for 30 days."
                     )))
                     .child(
                         div().flex().child(
@@ -671,7 +678,7 @@ impl ReaderView {
                         .when(page.yv.next_token.is_some(), |d| {
                             d.child(
                                 Button::new("sp-yv-more")
-                                    .label(format!("More results (up to {} requests)", YV_PAGE + 1))
+                                    .label("More results")
                                     .xsmall()
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.search_yv(true, cx)),

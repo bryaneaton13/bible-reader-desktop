@@ -177,6 +177,35 @@ impl Content {
     }
 }
 
+/// How long a YouVersion fetch waits before it is sent, so chapters the
+/// reader skims past are never requested.
+const FETCH_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(if cfg!(test) { 0 } else { 200 });
+
+/// Chapters to request together with `chapter`. Lengths come from the bundled
+/// translation, which is close enough to keep the request under the API's size.
+fn remote_window(
+    cx: &App,
+    chapter: ChapterRef,
+    direction: bible_youversion::Direction,
+) -> (u16, u16) {
+    let local = &cx.global::<Library>().translations[0];
+    bible_youversion::window::plan(
+        chapter,
+        direction,
+        bible_youversion::window::MAX_CHAPTERS,
+        |c| {
+            local.chapter(c).ok().flatten().map_or(30, |blocks| {
+                blocks
+                    .iter()
+                    .flat_map(|b| &b.spans)
+                    .filter(|s| matches!(s, bible_core::Span::Verse { .. }))
+                    .count() as u32
+            })
+        },
+    )
+}
+
 /// A pane's chapter. YouVersion chapters come from the disk cache when they
 /// are there (no network, so this is safe on the UI thread); otherwise the
 /// pane is `Loading` and the caller starts a fetch.
@@ -495,18 +524,48 @@ impl ReaderView {
         }
     }
 
+    /// The pane (left or right, any tab) with this id.
+    fn find_pane(&self, id: u64) -> Option<&Tab> {
+        self.tabs
+            .iter()
+            .flat_map(|t| std::iter::once(t).chain(t.side.as_deref()))
+            .find(|p| p.id == id)
+    }
+
     /// Fetch a YouVersion chapter on the background executor. The pane shows a
     /// loading state meanwhile; the result is dropped if the pane has moved on.
+    ///
+    /// To spend fewer API requests: the request waits a moment and is skipped
+    /// if the reader has already left the chapter (skimming with ⌘] costs
+    /// nothing), and it asks for the neighbouring chapters in the same
+    /// request, in the direction the reader is heading.
     fn fetch_remote(&mut self, id: u64, key: String, chapter: ChapterRef, cx: &mut Context<Self>) {
         let Some(bible) = remote_id(&key) else { return };
-        let Some(task) = remote::request(cx, move |source| {
-            source.chapter(bible, chapter).map(|fetched| fetched.value)
-        }) else {
+        if remote::source(cx).is_none() {
             self.content
                 .insert(id, Content::failed(&bible_youversion::Error::MissingKey));
             return;
-        };
+        }
         cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FETCH_DELAY).await;
+            let task = this
+                .update(cx, |this, cx| {
+                    let pane = this.find_pane(id)?;
+                    if pane.translation != key || pane.location.chapter != chapter {
+                        return None;
+                    }
+                    let direction =
+                        bible_youversion::Direction::from_move(pane.previous_chapter(), chapter);
+                    let window = remote_window(cx, chapter, direction);
+                    remote::request(cx, move |source| {
+                        source
+                            .chapter_in(bible, chapter, window)
+                            .map(|fetched| fetched.value)
+                    })
+                })
+                .ok()
+                .flatten();
+            let Some(task) = task else { return };
             let outcome = task.await;
             this.update(cx, |this, cx| {
                 remote::apply_renewed(outcome.session, cx);
@@ -525,12 +584,9 @@ impl ReaderView {
         result: Result<bible_youversion::Chapter, bible_youversion::Error>,
         cx: &mut Context<Self>,
     ) {
-        let pane = self
-            .tabs
-            .iter()
-            .flat_map(|t| std::iter::once(t).chain(t.side.as_deref()))
-            .find(|p| p.id == id);
-        let Some(pane) = pane else { return };
+        let Some(pane) = self.find_pane(id) else {
+            return;
+        };
         if pane.translation != key || pane.location.chapter != chapter {
             return;
         }
@@ -3993,12 +4049,8 @@ mod tests {
                     r#"{"verses":[{"reference":"JHN.3.16"}],"next_page_token":null}"#,
                 )
                 .unwrap();
-            cache
-                .put(
-                    "passage:777:JHN.3.16:text",
-                    r#"{"content":"For God so loved the world."}"#,
-                )
-                .unwrap();
+            // Verse text comes from the (cached) chapter, not a request per verse.
+            cache.put("passage:777:JHN.3:html", YV_JOHN_3).unwrap();
         }) else {
             return;
         };
@@ -4031,6 +4083,76 @@ mod tests {
             assert_eq!(page.yv.entries[0].text, "For God so loved the world.");
             assert_eq!(page.yv.requests_used, 0, "all from cache");
         });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[gpui_kit::test]
+    fn turning_pages_in_youversion_reuses_the_first_request(cx: &mut TestAppContext) {
+        use std::io::{Read, Write};
+        // A fake YouVersion that answers a three-chapter range once.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let paths = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen = paths.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = head.split(' ').nth(1).unwrap_or("").to_string();
+                seen.lock().unwrap().push(path);
+                // Answer a range like JHN.1-3 with that many chapters.
+                let count = head
+                    .split(' ')
+                    .nth(1)
+                    .and_then(|p| p.split('?').next())
+                    .and_then(|p| p.rsplit('/').next())
+                    .and_then(|id| id.split_once('.')?.1.split_once('-'))
+                    .and_then(|(a, b)| Some(b.parse::<u16>().ok()? - a.parse::<u16>().ok()? + 1))
+                    .unwrap_or(1);
+                let chapters: String = (1..=count)
+                    .map(|c| {
+                        format!(
+                            "<div class=\"p\"><span class=\"yv-v\" v=\"1\"></span>Chapter {c} one. <span class=\"yv-v\" v=\"2\"></span>Chapter {c} two.</div>"
+                        )
+                    })
+                    .collect();
+                let body = serde_json::json!({ "content": chapters }).to_string();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        let dir = yv_scratch("pages");
+        let d = dir.clone();
+        let Some((_, view)) = open_with(cx, move |cx| {
+            add_yv_bible(cx, &d, &base);
+        }) else {
+            return;
+        };
+        // Open John 1 in the YouVersion Bible: one request covers John 1 to 3.
+        view.update(cx, |v, cx| {
+            v.set_translation(crate::library::remote_key(YV_ID), cx);
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            assert!(v.focused_content().expect("content").load == Load::Ready);
+        });
+        // Read on twice: both page turns come from the cache.
+        view.update(cx, |v, cx| v.go_to(ChapterRef::new(43, 2), None, cx));
+        view.update(cx, |v, cx| v.go_to(ChapterRef::new(43, 3), None, cx));
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            let content = v.focused_content().expect("content");
+            assert!(content.load == Load::Ready);
+            assert_eq!(content.blocks.len(), 1);
+        });
+        let log = paths.lock().unwrap().clone();
+        assert_eq!(log.len(), 1, "one request for three chapters: {log:?}");
+        assert!(log[0].contains("/passages/JHN.1-3"), "{log:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

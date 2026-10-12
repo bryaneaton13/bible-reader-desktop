@@ -150,8 +150,14 @@ impl Client {
     }
 
     pub(crate) fn url(&self, path: &str, query: &[(&str, String)]) -> Result<Url, Error> {
-        let mut url = Url::parse(&format!("https://{}{path}", self.inner.host))
-            .map_err(|e| Error::Invalid(e.to_string()))?;
+        // A host may carry its own scheme (`http://127.0.0.1:4000` in tests).
+        let base = if self.inner.host.contains("://") {
+            self.inner.host.clone()
+        } else {
+            format!("https://{}", self.inner.host)
+        };
+        let mut url =
+            Url::parse(&format!("{base}{path}")).map_err(|e| Error::Invalid(e.to_string()))?;
         if !query.is_empty() {
             url.query_pairs_mut()
                 .extend_pairs(query.iter().map(|(k, v)| (*k, v.as_str())));

@@ -66,6 +66,13 @@ impl Tab {
         }
     }
 
+    /// The chapter this pane was showing just before the current one, for
+    /// guessing which way the reader is heading (see `Direction`). After a
+    /// Back, that is the chapter it came back from.
+    pub fn previous_chapter(&self) -> Option<ChapterRef> {
+        self.back.last().or(self.forward.last()).map(|l| l.chapter)
+    }
+
     pub fn is_split(&self) -> bool {
         self.side.is_some()
     }

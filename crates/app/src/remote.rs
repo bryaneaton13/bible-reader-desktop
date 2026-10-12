@@ -229,12 +229,15 @@ pub fn refresh_catalog(cx: &mut App) {
     let signed_in = cx
         .try_global::<Remote>()
         .is_some_and(|r| r.session.is_some());
+    // Signing in can change the list, so a signed-out list must not be served
+    // from cache afterwards.
+    let audience = if signed_in { "user" } else { "anon" };
     let Some(task) = request(cx, move |source| {
-        let licensed = source.bibles(&languages, false)?;
+        let licensed = source.bibles(&languages, false, audience)?;
         let mut unlicensed = Vec::new();
         let mut from_cache = licensed.from_cache;
         if show_unlicensed {
-            let all = source.bibles(&languages, true)?;
+            let all = source.bibles(&languages, true, audience)?;
             from_cache &= all.from_cache;
             unlicensed = all
                 .value
