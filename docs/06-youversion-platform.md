@@ -170,3 +170,6 @@ Terms (a Google Doc linked from `GET /v1/licenses`, license id 2, 69 Bibles incl
 2. **Plain-text cache on disk vs the encryption clause.** The cache is readable JSON in Application Support. Recommendation: encrypt cache files with a key in the Keychain (AES-GCM) before relying on the NIV, or ask whether the clause applies to a cache.
 3. **Copy.** ⇧⌘C / ⌥⌘C copy whole chapters to the clipboard with the notice. Biblica caps display, not copying, but a chapter copy of the NIV may be more than they intend. Recommendation: cap NIV copies at 25 verses.
 4. **Termination (72 hours)** is satisfied only if cached text expires quickly: another reason for decision 1.
+
+### Decisions recorded (2026-10-11, owner)
+Kept as built, knowing the risks above: the **30-day cache** for every Bible including the NIV, the **plain-text cache**, and **copying whole NIV chapters**. Rationale: a small desktop app used only by its owner for now. Revisit all three before sharing the app with anyone else (the license is between Biblica and the owner's YouVersion organization, and the clauses on downloads, encryption and takedown within 72 hours would then matter).
