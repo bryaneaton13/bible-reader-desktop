@@ -4,7 +4,7 @@ A fast, offline Bible reader for macOS, written in Rust. The whole interface is 
 
 ![Reading John 3 in the light theme, with the sidebar and a highlighted verse](docs/screenshots/reader-light.png)
 
-It ships with three public domain translations (BSB, KJV, WEB), a topical index built from three sources, and about 340,000 cross-references. All of it sits in local SQLite files.
+It ships with three public domain translations (BSB, KJV, WEB) and can add the NIV and other licensed Bibles from YouVersion with your own key. It also has a topical index built from three sources, and about 340,000 cross-references. All of it sits in local SQLite files.
 
 ## Why it's fast
 
@@ -35,7 +35,29 @@ Most Bible apps are a browser in a wrapper. This one is a native binary that tal
 - **Tabs and split view.** Every tab keeps its own passage, translation and history. Drag a tab onto half of the text to read two chapters (or two translations) side by side.
 - **Made for reading.** Red letter text, footnotes in a side panel, poetry indents, and six bundled font pairings. Light, Sepia, Dark or follow the system.
 - **Menu bar companion.** The app stays in the menu bar after you close its window.
-- **More Bibles from YouVersion (optional).** Paste a [YouVersion Platform](https://developers.youversion.com) app key in Settings ▸ Bible sources to add licensed translations such as the NIV. They load on demand, show a loading state, and are cached on your Mac for 30 days (never in this repo). Signing in with YouVersion is optional. Search stays local by default; searching with YouVersion is a separate button that says how many API requests it uses.
+- **More Bibles from YouVersion (optional).** Bring your own [YouVersion Platform](https://developers.youversion.com) app key to add licensed translations such as the **NIV**, NIrV and NIV (Anglicised), plus public domain Bibles in many languages. See [NIV and other Bibles from YouVersion](#niv-and-other-bibles-from-youversion) below.
+
+## NIV and other Bibles from YouVersion
+
+The NIV can't be bundled, so Bible Reader gets it (and other licensed translations) from [YouVersion Platform](https://developers.youversion.com), the free developer program from Life.Church. You bring your own app key (BYOK): the app ships without one, and nothing is sent anywhere until you add yours. The bundled BSB, KJV and WEB keep working offline either way.
+
+![Settings, Bible sources: connect with an app key, then pick Bibles such as the NIV](docs/screenshots/settings-bible-sources.png)
+
+### Set it up
+
+1. Sign in at the [YouVersion Platform portal](https://platform.youversion.com) and create an app. Copy its **App Key**. (It identifies your app and isn't a secret.)
+2. For the NIV, NIrV and NIV (Anglicised), open **Licensing** in the portal and accept Biblica's license. Public domain Bibles need no license. Bibles that still need one are hidden unless you turn on **Show Bibles that need a license**.
+3. In Bible Reader, open **Settings (⌘,) ▸ Bible sources**, paste the key into **App key**, then press **Connect**. You can also set `YVP_APP_KEY` in the environment, or at build time.
+4. Under **Bibles**, pick a language, type `niv` in **Find a Bible**, and switch the NIV on.
+5. The NIV now appears in the translation picker, the ⌘K palette, tabs and split view, like any bundled translation.
+
+### Good to know
+
+- **Online, cached on your Mac.** YouVersion Bibles load a chapter at a time (with a loading state) and are cached on your Mac for 30 days, then deleted. Cached chapters read offline. Nothing fetched is ever written to this repo. Settings ▸ Bible sources ▸ Storage shows the cache and clears it.
+- **Request budget.** The API serves one chapter per request, so the cache, de-duplicated requests and skipping chapters you page past keep the count low. Settings shows the number of API requests this session.
+- **Search stays local.** Searching with YouVersion is a separate, opt-in card on the search page that tells you how many requests it will use.
+- **Sign in with YouVersion is optional.** It may add Bibles for your account. It needs the installed app (`scripts/bundle.sh --install`), because the sign-in URL scheme is registered by the bundle.
+- **Copyright and license terms.** The publisher's copyright notice and a link to the publisher appear with the text and on copy. Using the NIV is bound by Biblica's license and YouVersion's terms through your own platform account. See [`docs/06-youversion-platform.md`](docs/06-youversion-platform.md) for the details.
 
 ## Built on GPUI and gpui-kit
 
