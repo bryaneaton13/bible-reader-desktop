@@ -11,7 +11,7 @@ use bible_core::{ChapterRef, Reference, VerseId, find_book, parse_reference};
 use bible_store::{Results, SearchHit};
 use gpui_kit::Action;
 
-use crate::library::{Appearance, FontPairing};
+use crate::library::{Appearance, FontPairing, SourceEntry};
 use crate::{
     ClosePane, CloseTab, CopyChapter, CopyVerse, DecreaseFont, DecreaseLineSpacing, FocusLeftPane,
     FocusRightPane, IncreaseFont, IncreaseLineSpacing, NewTab, OpenSettings, OpenShortcuts,
@@ -182,8 +182,9 @@ pub struct Context<'a> {
     /// Titles of all open tabs, e.g. "John 3 · BSB".
     pub tabs: Vec<String>,
     pub recent: &'a [(u8, u16)],
-    /// (abbrev, full name) in toolbar order.
-    pub translations: Vec<(String, String)>,
+    /// Bundled translations, then the user's YouVersion Bibles, in toolbar order.
+    pub translations: Vec<SourceEntry>,
+    /// Key of the focused pane's translation.
     pub translation: &'a str,
     pub appearance: Appearance,
     pub font_pairing: FontPairing,
@@ -502,10 +503,12 @@ fn commands(query: &str, cx: &Context) -> Vec<Row> {
         ),
     ];
     all.extend(rest);
-    for (index, (abbrev, name)) in cx.translations.iter().enumerate() {
-        if abbrev != cx.translation {
+    for (index, entry) in cx.translations.iter().enumerate() {
+        if entry.key != cx.translation {
+            let (abbrev, name) = (&entry.label, &entry.name);
+            let source = if entry.remote { " · YouVersion" } else { "" };
             all.push((
-                format!("Switch to {abbrev} ({name})"),
+                format!("Switch to {abbrev} ({name}){source}"),
                 &["translation", "version", "bible"],
                 Box::new(SelectTranslation { index }),
             ));
@@ -587,8 +590,18 @@ mod tests {
             tabs: vec!["John 3 · BSB".into(), "Psalms 23 · KJV".into()],
             recent: &recent,
             translations: vec![
-                ("BSB".into(), "Berean Standard Bible".into()),
-                ("KJV".into(), "King James Version".into()),
+                SourceEntry {
+                    key: "BSB".into(),
+                    label: "BSB".into(),
+                    name: "Berean Standard Bible".into(),
+                    remote: false,
+                },
+                SourceEntry {
+                    key: "KJV".into(),
+                    label: "KJV".into(),
+                    name: "King James Version".into(),
+                    remote: false,
+                },
             ],
             translation: "BSB",
             appearance: Appearance::System,

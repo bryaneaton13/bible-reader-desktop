@@ -43,6 +43,14 @@ cat > "$app/Contents/Info.plist" <<EOF
   <key>LSApplicationCategoryType</key><string>public.app-category.books</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <!-- "Sign in with YouVersion" redirects the browser back to youversionauth://callback -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>$bundle_id.youversion-sign-in</string>
+      <key>CFBundleURLSchemes</key><array><string>youversionauth</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 EOF

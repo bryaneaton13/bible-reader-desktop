@@ -41,6 +41,9 @@ Also done 2026-10-06: settings window (⌘,), footnote hover popovers, sidebar a
 - `gpui-tray` plain menu: verse of the day (curated list, local), copy, continue reading, recent, open app, launch at login, quit. See 02.
 - Close-last-window keeps app alive.
 
+## Phase 4b: YouVersion Platform source. Built 2026-10-11 (branch `youversion-sources`), needs a real key to verify
+Optional licensed Bibles online: `bible-youversion` crate, remote translations in tabs / split / palette, 30-day disk cache outside the repo, loading and error states, Settings ▸ Bible sources (key, optional Sign in with YouVersion, Bible list, cache), opt-in "Search with YouVersion". Verse of the Day from YouVersion deliberately not used. Plan and open questions: [06](06-youversion-platform.md).
+
 ## Phase 5: Package + licensed texts (time depends on publishers)
 - ~~`.app` bundle script (Info.plist + binary + DBs in Resources). Ad-hoc sign for personal use.~~ Done: `scripts/bundle.sh`.
 - When sharing: Developer ID signing, notarization, DMG. Sparkle optional.

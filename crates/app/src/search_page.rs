@@ -24,6 +24,50 @@ const KEY_PASSAGES: usize = 12;
 /// Related verses shown when a result is expanded.
 const RELATED_SHOWN: usize = 6;
 const SUGGESTIONS_SHOWN: usize = 8;
+/// Verses per YouVersion search page. Each one costs a request for its text.
+const YV_PAGE: u32 = 6;
+/// Most YouVersion verses shown at once: a publisher license (Biblica's) allows
+/// two chapters or 25 verses on screen, whichever is greater.
+const YV_MAX_SHOWN: usize = 25;
+
+/// A verse found by YouVersion's search, with its text.
+pub(super) struct YvEntry {
+    pub verse: VerseId,
+    pub text: String,
+}
+
+#[derive(Default, Clone, PartialEq)]
+pub(super) enum YvState {
+    #[default]
+    Idle,
+    Loading,
+    Done,
+    Failed(String),
+}
+
+/// The optional "Search with YouVersion" part of the page. Local search is
+/// always what runs; this only runs when the user asks.
+#[derive(Default)]
+pub(super) struct YvSearch {
+    /// Bible id to search; the first saved Bible when `None`.
+    pub bible: Option<u32>,
+    pub state: YvState,
+    pub entries: Vec<YvEntry>,
+    pub next_token: Option<String>,
+    pub did_you_mean: Vec<String>,
+    /// API requests the last search actually used (cached ones are free).
+    pub requests_used: u64,
+}
+
+impl YvSearch {
+    /// A new query makes the old YouVersion results stale; keep the Bible.
+    fn reset(&mut self) {
+        *self = Self {
+            bible: self.bible,
+            ..Self::default()
+        };
+    }
+}
 
 /// One result row you can open.
 pub(super) struct Entry {
@@ -65,6 +109,7 @@ pub(super) struct SearchPage {
     pub came_from: String,
     /// Suggestions for an empty page.
     pub suggestions: Vec<&'static str>,
+    pub yv: YvSearch,
 }
 
 impl SearchPage {
@@ -75,6 +120,7 @@ impl SearchPage {
     /// Only the key passages come first; the ranked hits follow, without
     /// repeating verses already listed.
     fn run(&mut self, cx: &App) {
+        self.yv.reset();
         let library = cx.global::<Library>();
         let translation = &library.translations[library.index_of(&self.translation).unwrap_or(0)];
         let request = SearchRequest {
@@ -210,7 +256,14 @@ impl ReaderView {
         self.renaming = None;
 
         let (scope, text) = split_scope(&action.query);
-        let translation = self.tab().translation.clone();
+        let mut translation = self.tab().translation.clone();
+        // Local search only knows the bundled translations; a YouVersion tab
+        // searches the first of those and offers YouVersion's own search.
+        let mut yv_bible = None;
+        if let Some(id) = remote_id(&translation) {
+            yv_bible = Some(id);
+            translation = cx.global::<Library>().translations[0].info.abbrev.clone();
+        }
         let came_from = self.tab().title();
         self.search_opens += 1;
         let mut page = SearchPage {
@@ -231,6 +284,10 @@ impl ReaderView {
                 self.search_opens + self.suggestion_seed,
                 SUGGESTIONS_SHOWN,
             ),
+            yv: YvSearch {
+                bible: yv_bible,
+                ..YvSearch::default()
+            },
         };
         page.run(cx);
         self.search = Some(page);
@@ -286,6 +343,363 @@ impl ReaderView {
             }
             _ => {}
         }
+    }
+
+    /// The Bible YouVersion search would use: the chosen one, else the first
+    /// the user added.
+    fn yv_bible(&self, page: &SearchPage, cx: &App) -> Option<(u32, String)> {
+        let saved = &cx.global::<Settings>().youversion.bibles;
+        let pick = page
+            .yv
+            .bible
+            .and_then(|id| saved.iter().find(|b| b.id == id))
+            .or_else(|| saved.first())?;
+        Some((pick.id, pick.abbrev.clone()))
+    }
+
+    /// Run YouVersion's search for the page's text (the next page when
+    /// `more`). Costs one request for the search plus one per verse shown.
+    pub(super) fn search_yv(&mut self, more: bool, cx: &mut Context<Self>) {
+        let Some(page) = self.search.as_ref() else {
+            return;
+        };
+        let query = page.text.trim().to_string();
+        let Some((bible, _)) = self.yv_bible(page, cx) else {
+            return;
+        };
+        if query.is_empty() || page.yv.state == YvState::Loading {
+            return;
+        }
+        let token = if more {
+            page.yv.next_token.clone()
+        } else {
+            None
+        };
+        let shown = if more { page.yv.entries.len() } else { 0 };
+        let room = YV_MAX_SHOWN.saturating_sub(shown).min(YV_PAGE as usize);
+        if room == 0 {
+            return;
+        }
+        let search_query = query.clone();
+        let Some(task) = remote::request(cx, move |source| {
+            let before = source.client().requests_made();
+            let found = source.search(bible, &search_query, YV_PAGE, token.as_deref())?;
+            let mut entries = Vec::new();
+            // Verse text comes from whole chapters: results in the same chapter
+            // share one request, cached chapters cost nothing, and opening a
+            // result afterwards is instant.
+            for verse in found.value.verses.iter().copied().take(room) {
+                let text = match source.chapter(bible, verse.chapter_ref()) {
+                    Ok(fetched) => bible_youversion::verse_texts(&fetched.value.blocks)
+                        .into_iter()
+                        .find(|(v, _)| *v == verse.verse())
+                        .map(|(_, text)| text)
+                        .unwrap_or_default(),
+                    // Stop early on errors that will repeat for every verse.
+                    Err(
+                        err @ (bible_youversion::Error::RateLimited { .. }
+                        | bible_youversion::Error::NotPermitted
+                        | bible_youversion::Error::Offline(_)),
+                    ) => return Err(err),
+                    Err(_) => String::new(),
+                };
+                entries.push(YvEntry { verse, text });
+            }
+            let used = source.client().requests_made().saturating_sub(before);
+            Ok((found.value, entries, used))
+        }) else {
+            return;
+        };
+        if let Some(page) = self.search.as_mut() {
+            if !more {
+                page.yv.entries.clear();
+                page.yv.did_you_mean.clear();
+                page.yv.requests_used = 0;
+            }
+            page.yv.state = YvState::Loading;
+        }
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |this, cx| {
+                remote::apply_renewed(outcome.session, cx);
+                let Some(page) = this.search.as_mut() else {
+                    return;
+                };
+                // The text changed while we waited: these results are stale.
+                if page.text.trim() != query {
+                    return;
+                }
+                match outcome.result {
+                    Ok((found, entries, used)) => {
+                        page.yv.entries.extend(entries);
+                        page.yv.next_token = found.next_page_token;
+                        page.yv.did_you_mean = found.did_you_mean;
+                        page.yv.requests_used += used;
+                        page.yv.state = YvState::Done;
+                    }
+                    Err(err) => page.yv.state = YvState::Failed(err.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Open a YouVersion result in the Bible it was found in.
+    fn open_yv_result(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(page) = self.search.as_ref() else {
+            return;
+        };
+        let Some(entry) = page.yv.entries.get(ix) else {
+            return;
+        };
+        let Some((bible, _)) = self.yv_bible(page, cx) else {
+            return;
+        };
+        let verse = entry.verse;
+        self.search = None;
+        self.focus.focus(window, cx);
+        self.tab_mut().translation = crate::library::remote_key(bible);
+        self.go_to(verse.chapter_ref(), Some(verse), cx);
+    }
+
+    /// The optional YouVersion search card. Hidden until an app key is set.
+    fn render_yv_search(&self, page: &SearchPage, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if page.text.trim().is_empty() || remote::source(cx).is_none() {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        let saved = cx.global::<Settings>().youversion.bibles.clone();
+        let chosen = self.yv_bible(page, cx);
+        let muted = theme.muted_foreground;
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(Icon::new(IconName::Globe).size_4().text_color(muted))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Search with YouVersion"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child("optional · uses API requests"),
+                    ),
+            );
+
+        let Some((_, label)) = chosen else {
+            card = card
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(muted)
+                        .child("Add a YouVersion Bible to search it here."),
+                )
+                .child(
+                    div().flex().child(
+                        Button::new("sp-yv-setup")
+                            .label("Choose Bibles")
+                            .small()
+                            .on_click(|_, _, cx| crate::settings_window::open_sources(cx)),
+                    ),
+                );
+            return Some(card.into_any_element());
+        };
+
+        if saved.len() > 1 {
+            let chips = saved.iter().map(|b| {
+                let id = b.id;
+                let selected = Some(id) == page.yv.bible
+                    || (page.yv.bible.is_none() && saved.first().map(|f| f.id) == Some(id));
+                Button::new(("sp-yv-bible", id as usize))
+                    .label(b.abbrev.clone())
+                    .xsmall()
+                    .ghost()
+                    .selected(selected)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(page) = this.search.as_mut() {
+                            page.yv.bible = Some(id);
+                            page.yv.reset();
+                        }
+                        cx.notify();
+                    }))
+            });
+            card = card.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(div().text_xs().text_color(muted).w(px(72.)).child("Bible"))
+                    .children(chips),
+            );
+        }
+
+        let query = page.text.trim().to_string();
+        let first_page = page.yv.entries.is_empty();
+        match &page.yv.state {
+            YvState::Idle => {
+                card = card
+                    .child(div().text_sm().text_color(muted).child(format!(
+                        "Searches {label} on YouVersion. Uses 1 request to search, plus one for each chapter it needs to show the verses (none if you have read them already). Results are cached for 30 days."
+                    )))
+                    .child(
+                        div().flex().child(
+                            Button::new("sp-yv-search")
+                                .icon(IconName::Search)
+                                .label(format!("Search YouVersion for “{query}”"))
+                                .small()
+                                .primary()
+                                .on_click(cx.listener(|this, _, _, cx| this.search_yv(false, cx))),
+                        ),
+                    );
+            }
+            YvState::Loading => {
+                card = card
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_sm()
+                            .text_color(muted)
+                            .child(Spinner::new().small())
+                            .child(format!("Searching {label} on YouVersion…")),
+                    )
+                    .when(first_page, |c| {
+                        c.children(
+                            [0.9, 0.75, 0.85]
+                                .map(|w| Skeleton::new().h_5().w(relative(w)).rounded_md()),
+                        )
+                    });
+            }
+            YvState::Failed(message) => {
+                card = card
+                    .child(
+                        div()
+                            .flex()
+                            .items_start()
+                            .gap_2()
+                            .text_sm()
+                            .text_color(theme.danger)
+                            .child(Icon::new(IconName::CircleAlert))
+                            .child(message.clone()),
+                    )
+                    .child(
+                        div().flex().child(
+                            Button::new("sp-yv-retry")
+                                .icon(IconName::RefreshCw)
+                                .label("Try again")
+                                .small()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    let more = this
+                                        .search
+                                        .as_ref()
+                                        .is_some_and(|p| !p.yv.entries.is_empty());
+                                    this.search_yv(more, cx)
+                                })),
+                        ),
+                    );
+            }
+            YvState::Done => {
+                let count = page.yv.entries.len();
+                card = card.child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(muted)
+                        .child(format!("{} · {label} · {count}", "YOUVERSION")),
+                );
+                if count == 0 {
+                    card = card.child(div().text_sm().text_color(muted).child(format!(
+                        "No results for “{query}” in {label}.{}",
+                        page.yv
+                            .did_you_mean
+                            .first()
+                            .map(|d| format!(" Did you mean “{d}”?"))
+                            .unwrap_or_default()
+                    )));
+                }
+                for (ix, entry) in page.yv.entries.iter().enumerate() {
+                    let accent = theme.accent;
+                    card = card.child(
+                        div()
+                            .id(("sp-yv-row", ix))
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .p_2()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|d| d.bg(accent))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_yv_result(ix, window, cx)
+                            }))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.primary)
+                                    .child(entry.verse.to_string()),
+                            )
+                            .child(div().text_sm().child(if entry.text.is_empty() {
+                                "(text unavailable)".to_string()
+                            } else {
+                                entry.text.clone()
+                            })),
+                    );
+                }
+                let used = page.yv.requests_used;
+                card = card.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(if used == 0 {
+                                    "Served from cache: no requests used.".to_string()
+                                } else {
+                                    format!(
+                                        "Used {used} API request{}.",
+                                        if used == 1 { "" } else { "s" }
+                                    )
+                                }),
+                        )
+                        .when(
+                            page.yv.next_token.is_some() && page.yv.entries.len() < YV_MAX_SHOWN,
+                            |d| {
+                                d.child(
+                                    Button::new("sp-yv-more")
+                                        .label("More results")
+                                        .xsmall()
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.search_yv(true, cx)),
+                                        ),
+                                )
+                            },
+                        ),
+                );
+            }
+        }
+        Some(card.into_any_element())
     }
 
     fn search_rerun(&mut self, cx: &mut Context<Self>, change: impl FnOnce(&mut SearchPage)) {
@@ -815,6 +1229,7 @@ impl ReaderView {
                     .font_family(".SystemUIFont")
                     .child(header)
                     .child(self.render_search_filters(page, cx))
+                    .children(self.render_yv_search(page, cx))
                     .child(body),
             )
     }

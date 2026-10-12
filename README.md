@@ -1,6 +1,6 @@
 # Bible Reader
 
-A fast, offline Bible reader for macOS, written in Rust. The whole interface is drawn on the GPU with [GPUI](https://www.gpui.rs) (the UI framework behind the [Zed](https://zed.dev) editor) and assembled from [gpui-kit](https://gpui-kit.com) components. There is no web view, no Electron and no network call anywhere in the app.
+A fast, offline Bible reader for macOS, written in Rust. The whole interface is drawn on the GPU with [GPUI](https://www.gpui.rs) (the UI framework behind the [Zed](https://zed.dev) editor) and assembled from [gpui-kit](https://gpui-kit.com) components. There is no web view and no Electron. Out of the box the app makes no network calls; the only ones are the optional YouVersion source below, which you turn on yourself.
 
 ![Reading John 3 in the light theme, with the sidebar and a highlighted verse](docs/screenshots/reader-light.png)
 
@@ -35,6 +35,7 @@ Most Bible apps are a browser in a wrapper. This one is a native binary that tal
 - **Tabs and split view.** Every tab keeps its own passage, translation and history. Drag a tab onto half of the text to read two chapters (or two translations) side by side.
 - **Made for reading.** Red letter text, footnotes in a side panel, poetry indents, and six bundled font pairings. Light, Sepia, Dark or follow the system.
 - **Menu bar companion.** The app stays in the menu bar after you close its window.
+- **More Bibles from YouVersion (optional).** Paste a [YouVersion Platform](https://developers.youversion.com) app key in Settings ▸ Bible sources to add licensed translations such as the NIV. They load on demand, show a loading state, and are cached on your Mac for 30 days (never in this repo). Signing in with YouVersion is optional. Search stays local by default; searching with YouVersion is a separate button that says how many API requests it uses.
 
 ## Built on GPUI and gpui-kit
 
@@ -117,6 +118,7 @@ crates/
   bible-core/    domain types: books, verse IDs, reference parser, chapter content model (no UI, no DB)
   bible-store/   SQLite: one read-only DB per translation (FTS5 search), plus study.db (topics, cross-references)
   bible-import/  USFM parser and importer CLI
+  bible-youversion/  optional YouVersion Platform client: blocking HTTP, 30-day disk cache, passage HTML to chapter blocks, sign-in (no UI)
   app/           the GPUI app: reader window, tabs, ⌘K palette, notes panel, menu bar item
 data/sources/    USFM inputs, topics, cross-references
 scripts/         shot.sh (offscreen screenshots), bundle.sh (.app), make-icon.swift

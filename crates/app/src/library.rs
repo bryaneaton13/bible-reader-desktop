@@ -106,6 +106,128 @@ pub struct Settings {
     /// `translation` above mirror the active one (the menu bar reads them).
     pub tabs: Vec<SavedTab>,
     pub active_tab: usize,
+    /// Optional YouVersion Platform Bibles (see `remote.rs`).
+    pub youversion: YouVersionSettings,
+}
+
+/// A YouVersion Bible the user added. Only the label data lives here; the
+/// text is fetched on demand and cached for 30 days outside settings.json.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedBible {
+    pub id: u32,
+    pub abbrev: String,
+    pub name: String,
+    #[serde(default)]
+    pub copyright: String,
+    /// USFM codes of the books it has; empty when unknown (older saves).
+    #[serde(default)]
+    pub books: Vec<String>,
+    /// Publisher name and site, shown as a link with the copyright notice
+    /// (Biblica's license requires a link containing "Biblica").
+    #[serde(default)]
+    pub publisher: String,
+    #[serde(default)]
+    pub publisher_url: String,
+}
+
+impl SavedBible {
+    pub fn has_book(&self, usfm: &str) -> bool {
+        self.books.is_empty() || self.books.iter().any(|b| b.eq_ignore_ascii_case(usfm))
+    }
+}
+
+/// Settings for the optional YouVersion source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct YouVersionSettings {
+    /// App key pasted in Settings. Empty falls back to `YVP_APP_KEY`.
+    pub app_key: String,
+    /// Language ranges to list Bibles in ("en", "es", "*" for all).
+    pub languages: Vec<String>,
+    pub bibles: Vec<SavedBible>,
+    /// The user signed in, so the session is in the Keychain. Lets us skip
+    /// touching the Keychain for people who never signed in.
+    pub signed_in: bool,
+    /// List Bibles the app isn't licensed for too.
+    pub show_unlicensed: bool,
+}
+
+impl Default for YouVersionSettings {
+    fn default() -> Self {
+        Self {
+            app_key: String::new(),
+            languages: vec!["en".into()],
+            bibles: Vec::new(),
+            signed_in: false,
+            show_unlicensed: false,
+        }
+    }
+}
+
+/// Tab / settings key of a YouVersion Bible: `yv:<id>`.
+const REMOTE_PREFIX: &str = "yv:";
+
+pub fn remote_key(id: u32) -> String {
+    format!("{REMOTE_PREFIX}{id}")
+}
+
+pub fn remote_id(key: &str) -> Option<u32> {
+    key.strip_prefix(REMOTE_PREFIX)?.parse().ok()
+}
+
+/// One row of the translation pickers: a bundled translation or a
+/// YouVersion Bible the user added.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceEntry {
+    /// What tabs and settings store: the abbreviation, or `yv:<id>`.
+    pub key: String,
+    pub label: String,
+    pub name: String,
+    pub remote: bool,
+}
+
+/// Bundled translations first, then the user's YouVersion Bibles.
+pub fn sources(cx: &App) -> Vec<SourceEntry> {
+    let library = cx.global::<Library>();
+    let local = library.translations.iter().map(|t| SourceEntry {
+        key: t.info.abbrev.clone(),
+        label: t.info.abbrev.clone(),
+        name: t.info.name.clone(),
+        remote: false,
+    });
+    let remote = cx
+        .global::<Settings>()
+        .youversion
+        .bibles
+        .iter()
+        .map(|b| SourceEntry {
+            key: remote_key(b.id),
+            label: b.abbrev.clone(),
+            name: b.name.clone(),
+            remote: true,
+        });
+    local.chain(remote).collect()
+}
+
+/// The saved YouVersion Bible behind a `yv:<id>` key.
+pub fn saved_bible<'a>(settings: &'a Settings, key: &str) -> Option<&'a SavedBible> {
+    let id = remote_id(key)?;
+    settings.youversion.bibles.iter().find(|b| b.id == id)
+}
+
+/// Can this key be shown right now: bundled, or a YouVersion Bible that is
+/// still in the user's list?
+pub fn is_available(cx: &App, key: &str) -> bool {
+    cx.global::<Library>().index_of(key).is_some()
+        || saved_bible(cx.global::<Settings>(), key).is_some()
+}
+
+/// Short label for a translation key ("KJV", "NIV").
+pub fn source_label(cx: &App, key: &str) -> String {
+    match saved_bible(cx.global::<Settings>(), key) {
+        Some(b) => b.abbrev.clone(),
+        None => key.to_string(),
+    }
 }
 
 /// One reading tab as stored in settings.json.
@@ -304,16 +426,23 @@ impl Default for Settings {
             recent: Vec::new(),
             tabs: Vec::new(),
             active_tab: 0,
+            youversion: YouVersionSettings::default(),
         }
     }
 }
 
 impl Global for Settings {}
 
+/// `~/Library/Application Support/BibleReader`, outside the repo and the
+/// app bundle. Honors `HOME` so automated runs can use a scratch directory.
+pub fn support_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join("Library/Application Support/BibleReader"))
+}
+
 impl Settings {
     fn path() -> Option<PathBuf> {
-        let home = std::env::var_os("HOME")?;
-        Some(PathBuf::from(home).join("Library/Application Support/BibleReader/settings.json"))
+        Some(support_dir()?.join("settings.json"))
     }
 
     pub fn load() -> Self {

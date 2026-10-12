@@ -13,9 +13,11 @@ path = "src/main.rs"
 [dependencies]
 bible-core.workspace = true
 bible-store.workspace = true
+bible-youversion.workspace = true
 gpui-kit.workspace = true
 gpui-tray = { version = "0.1.4", default-features = false, features = ["gpui-kit", "menu-state"] }
 anyhow.workspace = true
+async-channel = "2"
 serde.workspace = true
 serde_json.workspace = true
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
