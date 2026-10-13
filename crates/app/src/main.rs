@@ -7,6 +7,7 @@ mod library;
 mod palette;
 mod reader;
 mod remote;
+mod saved;
 mod selectable;
 mod settings_window;
 mod shortcuts_window;
@@ -75,6 +76,11 @@ actions!(
         SidebarPrevBook,
         SidebarNextBook,
         SidebarOpen,
+        SaveSelection,
+        ClearSelection,
+        ShowSaved,
+        ExportSaved,
+        CopySavedMarkdown,
     ]
 );
 
@@ -127,6 +133,7 @@ fn main() {
         fonts::register(cx);
         cx.set_global(library);
         cx.set_global(Settings::load());
+        cx.set_global(saved::Saved::load());
         remote::init(cx);
         cx.spawn(async move |cx| {
             while let Ok(urls) = url_rx.recv().await {
@@ -175,6 +182,8 @@ fn main() {
                 MenuItem::action("New Tab", NewTab),
                 MenuItem::action("Reopen Closed Tab", ReopenClosedTab),
                 MenuItem::separator(),
+                MenuItem::action("Export Saved Verses…", ExportSaved),
+                MenuItem::separator(),
                 MenuItem::action("Close Tab", CloseTab),
                 MenuItem::action("Close Window", CloseWindow),
             ]),
@@ -182,6 +191,8 @@ fn main() {
                 MenuItem::action("Copy", gpui_kit::base::input::Copy),
                 MenuItem::action("Copy Verse with Citation", CopyVerse),
                 MenuItem::action("Copy Chapter", CopyChapter),
+                MenuItem::separator(),
+                MenuItem::action("Highlight Selected Verses", SaveSelection),
             ]),
             Menu::new("Go").items([
                 MenuItem::action("Go to Passage or Search…", OpenPalette),
@@ -192,6 +203,7 @@ fn main() {
                         query: String::new(),
                     },
                 ),
+                MenuItem::action("Saved Verses", ShowSaved),
                 MenuItem::separator(),
                 MenuItem::action("Next Chapter", NextChapter),
                 MenuItem::action("Previous Chapter", PrevChapter),

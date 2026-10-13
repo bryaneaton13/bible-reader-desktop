@@ -4,11 +4,13 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
-use bible_core::{BOOKS, Block, BlockKind, ChapterRef, Note, NoteKind, Testament, VerseId};
-use bible_store::Passage;
+use bible_core::{
+    BOOKS, Block, BlockKind, ChapterRef, Note, NoteKind, Testament, VerseId, VerseSet,
+};
+use bible_store::{NewSaved, Passage, SavedVerse};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::link::Link;
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
@@ -35,27 +37,96 @@ use crate::palette::{
     SEARCH_LIMIT, SUGGESTIONS_SHOWN, SearchIn, SetPaletteQuery,
 };
 use crate::remote;
+use crate::saved::{self, Saved};
 use crate::suggestions;
 use crate::tabs::{Location, Tab};
 use crate::translation_picker::TranslationItem;
 use crate::{
-    ClosePalette, ClosePane, CloseTab, CopyChapter, CopyVerse, DecreaseFont, DecreaseLineSpacing,
-    FocusLeftPane, FocusReader, FocusRightPane, FocusSidebar, GoBack, GoForward, IncreaseFont,
-    IncreaseLineSpacing, NewTab, NextChapter, NextTab, OpenCommands, OpenInNewTab, OpenInSplit,
-    OpenPalette, PrevChapter, PrevTab, ReopenClosedTab, ResetFont, ResetLineSpacing,
-    SelectTranslation, SetAppearance, SetFontPairing, SidebarDown, SidebarLeft, SidebarNextBook,
-    SidebarOpen, SidebarPrevBook, SidebarRight, SidebarUp, ToggleInspector, ToggleRedLetter,
-    ToggleSidebar, ToggleSplit, ToggleVerseNumbers,
+    ClearSelection, ClosePalette, ClosePane, CloseTab, CopyChapter, CopySavedMarkdown, CopyVerse,
+    DecreaseFont, DecreaseLineSpacing, ExportSaved, FocusLeftPane, FocusReader, FocusRightPane,
+    FocusSidebar, GoBack, GoForward, IncreaseFont, IncreaseLineSpacing, NewTab, NextChapter,
+    NextTab, OpenCommands, OpenInNewTab, OpenInSplit, OpenPalette, PrevChapter, PrevTab,
+    ReopenClosedTab, ResetFont, ResetLineSpacing, SaveSelection, SelectTranslation, SetAppearance,
+    SetFontPairing, ShowSaved, SidebarDown, SidebarLeft, SidebarNextBook, SidebarOpen,
+    SidebarPrevBook, SidebarRight, SidebarUp, ToggleInspector, ToggleRedLetter, ToggleSidebar,
+    ToggleSplit, ToggleVerseNumbers,
 };
 
 #[path = "search_page.rs"]
 mod search_page;
 use search_page::SearchPage;
 
+#[path = "saved_page.rs"]
+mod saved_page;
+use saved_page::SavedPage;
+
+#[path = "highlights.rs"]
+mod highlights;
+use highlights::highlight_color;
+
+/// Verses picked in one pane by clicking their numbers.
+#[derive(Clone, Debug, PartialEq)]
+struct Selection {
+    pane: u64,
+    chapter: ChapterRef,
+    verses: VerseSet,
+    /// Where a shift-click range starts.
+    anchor: u16,
+}
+
+/// Every verse of a chapter as (number, text), its version label and, for
+/// translations that aren't public domain, the copyright notice. YouVersion
+/// text comes from the pane's loaded `content`, not a database.
+fn chapter_texts(
+    cx: &App,
+    content: Option<&Content>,
+    key: &str,
+    chapter: ChapterRef,
+) -> (Vec<(u16, String)>, String, String) {
+    let settings = cx.global::<Settings>();
+    if let Some(bible) = saved_bible(settings, key) {
+        let texts = content.map_or_else(Vec::new, |c| bible_youversion::verse_texts(&c.blocks));
+        let notice = if bible.copyright.trim().is_empty() {
+            "Provided by YouVersion.".to_string()
+        } else {
+            format!("{} Provided by YouVersion.", bible.copyright.trim())
+        };
+        return (texts, bible.abbrev.clone(), notice);
+    }
+    let library = cx.global::<Library>();
+    let translation = &library.translations[library.index_of(key).unwrap_or(0)];
+    let mut texts = Vec::new();
+    for v in 1u16.. {
+        match translation.verse_text(VerseId::new(chapter.book, chapter.chapter, v)) {
+            Ok(Some(t)) => texts.push((v, t)),
+            _ => break,
+        }
+    }
+    (
+        texts,
+        translation.info.abbrev.clone(),
+        translation.info.copyright.trim().to_string(),
+    )
+}
+
+/// `text` with its citation, and the notice unless it's public domain.
+fn cite(text: &str, reference: &str, abbrev: &str, notice: &str, quoted: bool) -> String {
+    let mut out = if quoted {
+        format!("“{text}” — {reference} ({abbrev})")
+    } else {
+        format!("{text}\n— {reference} ({abbrev})")
+    };
+    let notice = notice.trim();
+    if !notice.is_empty() && !notice.to_lowercase().contains("public domain") {
+        out.push('\n');
+        out.push_str(notice);
+    }
+    out
+}
+
 /// Verse (or whole chapter) text with a citation and, for translations that
 /// aren't public domain, the copyright notice. `key` is the focused pane's
-/// translation; `content` its loaded chapter (YouVersion text lives there,
-/// not in a database).
+/// translation; `content` its loaded chapter.
 fn copy_text(
     cx: &App,
     content: Option<&Content>,
@@ -63,56 +134,26 @@ fn copy_text(
     chapter: ChapterRef,
     verse: Option<VerseId>,
 ) -> Option<String> {
-    let settings = cx.global::<Settings>();
-    let (verses, abbrev, notice): (Vec<(u16, String)>, String, String) =
-        if let Some(bible) = saved_bible(settings, key) {
-            let texts = bible_youversion::verse_texts(&content?.blocks);
-            let notice = if bible.copyright.trim().is_empty() {
-                "Provided by YouVersion.".to_string()
-            } else {
-                format!("{} Provided by YouVersion.", bible.copyright.trim())
-            };
-            (texts, bible.abbrev.clone(), notice)
-        } else {
-            let library = cx.global::<Library>();
-            let translation = &library.translations[library.index_of(key).unwrap_or(0)];
-            let mut texts = Vec::new();
-            for v in 1u16.. {
-                match translation.verse_text(VerseId::new(chapter.book, chapter.chapter, v)) {
-                    Ok(Some(t)) => texts.push((v, t)),
-                    _ => break,
-                }
-            }
-            (
-                texts,
-                translation.info.abbrev.clone(),
-                translation.info.copyright.trim().to_string(),
-            )
-        };
-    let (body, reference) = match verse {
+    let (verses, abbrev, notice) = chapter_texts(cx, content, key, chapter);
+    match verse {
         Some(id) => {
             let (_, text) = verses.iter().find(|(v, _)| *v == id.verse())?;
-            (text.clone(), id.to_string())
+            Some(cite(text, &id.to_string(), &abbrev, &notice, true))
         }
         None => {
             if verses.is_empty() {
                 return None;
             }
             let lines: Vec<String> = verses.iter().map(|(v, t)| format!("{v} {t}")).collect();
-            (lines.join("\n"), chapter.to_string())
+            Some(cite(
+                &lines.join("\n"),
+                &chapter.to_string(),
+                &abbrev,
+                &notice,
+                false,
+            ))
         }
-    };
-    let mut out = if verse.is_some() {
-        format!("“{body}” — {reference} ({abbrev})")
-    } else {
-        format!("{body}\n— {reference} ({abbrev})")
-    };
-    let notice = notice.trim();
-    if !notice.is_empty() && !notice.to_lowercase().contains("public domain") {
-        out.push('\n');
-        out.push_str(notice);
     }
-    Some(out)
 }
 
 const TOOLBAR_HEIGHT: f32 = 44.;
@@ -312,6 +353,15 @@ pub struct ReaderView {
     search_opens: usize,
     /// Per-launch offset into the suggestion list.
     suggestion_seed: usize,
+    /// Verses picked in a pane, waiting to be highlighted.
+    selection: Option<Selection>,
+    /// Saved item whose note and tags are being edited.
+    note_editor: Option<i64>,
+    note_input: Entity<TextareaState>,
+    tags_input: Entity<InputState>,
+    /// State of the Saved verses tab (there is at most one).
+    saved_page: SavedPage,
+    saved_query: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -371,12 +421,27 @@ impl ReaderView {
             InputState::new(window, cx)
                 .placeholder("Search words, a topic like “pride”, or \"a phrase\"")
         });
+        let note_input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(3, 10)
+                .placeholder("Why this verse matters, where you heard it…")
+        });
+        let tags_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Tags, separated by commas"));
+        let saved_query = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Search saved verses, notes, tags or “rom 8”")
+        });
 
         let subscriptions = vec![
             cx.subscribe_in(&translation_select, window, Self::on_translation_selected),
             cx.subscribe_in(&side_select, window, Self::on_side_translation_selected),
             cx.subscribe_in(&rename_input, window, Self::on_rename_input),
             cx.subscribe_in(&search_input, window, Self::on_search_input),
+            cx.subscribe_in(&saved_query, window, Self::on_saved_query),
+            cx.subscribe_in(&tags_input, window, Self::on_tags_input),
+            cx.subscribe_in(&note_input, window, Self::on_note_input),
+            // Highlights and the Saved verses page follow user.db.
+            cx.observe_global::<Saved>(|this, cx| this.on_saved_changed(cx)),
             // Settings window changes and menu actions repaint the reader.
             cx.observe_global::<Settings>(|this, cx| this.on_settings_changed(cx)),
             // Sign-in and catalog changes repaint; a changed key or session can
@@ -424,6 +489,12 @@ impl ReaderView {
             suggestion_seed: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs() as usize / 3600),
+            selection: None,
+            note_editor: None,
+            note_input,
+            tags_input,
+            saved_page: SavedPage::default(),
+            saved_query,
             _subscriptions: subscriptions,
         };
         this.show_active(cx);
@@ -465,6 +536,12 @@ impl ReaderView {
     /// other pane has text too, and persist.
     fn show_active(&mut self, cx: &mut Context<Self>) {
         self.search = None;
+        self.keep_selection_if_visible();
+        if self.tabs[self.active].is_saved_page() {
+            self.selected_note = None;
+            self.sync_focus(cx);
+            return;
+        }
         let focused = self.tab();
         let (id, location, abbrev) = (focused.id, focused.location, focused.translation.clone());
         let scroll = focused.scroll.clone();
@@ -655,19 +732,33 @@ impl ReaderView {
         let saved = self.tabs.iter().map(Tab::to_saved).collect();
         let active = self.active;
         let chapter = self.chapter();
+        let reading = !self.tabs[active].is_saved_page();
         cx.update_global::<Settings, _>(|s, _| {
             s.tabs = saved;
             s.active_tab = active;
             s.book = chapter.book;
             s.chapter = chapter.chapter;
-            s.push_recent(chapter);
+            if reading {
+                s.push_recent(chapter);
+            }
             s.save();
         });
         crate::tray::refresh(cx);
     }
 
+    /// Navigating from the Saved verses tab opens a reading tab beside it,
+    /// so the list stays where it was.
+    fn leave_saved_page(&mut self) {
+        let tab = &self.tabs[self.active];
+        if tab.is_saved_page() {
+            let reading = Tab::new(tab.location, tab.translation.clone());
+            self.insert_tab_after_active(reading);
+        }
+    }
+
     /// Navigate the active tab, recording the current place for Back.
     pub fn go_to(&mut self, chapter: ChapterRef, verse: Option<VerseId>, cx: &mut Context<Self>) {
+        self.leave_saved_page();
         self.tab_mut().navigate(Location { chapter, verse });
         self.show_active(cx);
         self.scroll_to_top_if_no_verse(verse);
@@ -715,6 +806,7 @@ impl ReaderView {
     }
 
     fn open_passage(&mut self, action: &OpenPassage, _: &mut Window, cx: &mut Context<Self>) {
+        self.leave_saved_page();
         self.tab_mut().navigate(Location {
             chapter: action.chapter,
             verse: action.verse,
@@ -724,6 +816,9 @@ impl ReaderView {
     }
 
     fn next_chapter(&mut self, _: &NextChapter, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs[self.active].is_saved_page() {
+            return;
+        }
         if let Some(next) = self.chapter().next() {
             self.open_passage(
                 &OpenPassage {
@@ -737,6 +832,9 @@ impl ReaderView {
     }
 
     fn prev_chapter(&mut self, _: &PrevChapter, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs[self.active].is_saved_page() {
+            return;
+        }
         if let Some(prev) = self.chapter().prev() {
             self.open_passage(
                 &OpenPassage {
@@ -976,6 +1074,8 @@ impl ReaderView {
             && from < self.tabs.len()
             && !self.tabs[self.active].is_split()
             && !self.tabs[from].is_split()
+            && !self.tabs[self.active].is_saved_page()
+            && !self.tabs[from].is_saved_page()
     }
 
     /// Dragging a tab onto the left or right half of the text.
@@ -1000,6 +1100,7 @@ impl ReaderView {
         verse: Option<VerseId>,
         cx: &mut Context<Self>,
     ) {
+        self.leave_saved_page();
         let tab = &mut self.tabs[self.active];
         if tab.is_split() {
             tab.focus_side = !tab.focus_side;
@@ -1072,6 +1173,9 @@ impl ReaderView {
 
     /// Switch the focused pane's translation.
     fn set_translation(&mut self, abbrev: String, cx: &mut Context<Self>) {
+        if self.tabs[self.active].is_saved_page() {
+            return;
+        }
         self.tab_mut().translation = abbrev;
         self.show_active(cx);
         self.refresh_palette(cx);
@@ -1112,8 +1216,16 @@ impl ReaderView {
         cx.notify();
     }
 
-    /// ⇧⌘C: copy the jumped-to verse (or verse 1) with its citation.
+    /// ⇧⌘C: copy the selected verses, or the jumped-to verse (or verse 1),
+    /// with the citation.
     fn copy_verse(&mut self, _: &CopyVerse, _: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs[self.active].is_saved_page() {
+            return;
+        }
+        if self.selection.is_some() {
+            self.copy_selection(cx);
+            return;
+        }
         let chapter = self.chapter();
         let verse = self
             .target()
@@ -1131,6 +1243,9 @@ impl ReaderView {
 
     /// ⌥⌘C: copy the whole chapter with its citation.
     fn copy_chapter(&mut self, _: &CopyChapter, _: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs[self.active].is_saved_page() {
+            return;
+        }
         if let Some(text) = copy_text(
             cx,
             self.focused_content(),
@@ -1262,13 +1377,14 @@ impl ReaderView {
                     .on_click(cx.listener(|this, _, window, cx| this.new_tab(&NewTab, window, cx))),
             );
 
+        let on_saved = self.tabs[self.active].is_saved_page();
         let center = div()
             .flex()
             .items_center()
             .gap_1()
             .child(
                 icon_button("prev", IconName::ChevronLeft, "Previous chapter (⌘[)")
-                    .disabled(self.chapter().prev().is_none())
+                    .disabled(on_saved || self.chapter().prev().is_none())
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.prev_chapter(&PrevChapter, window, cx)
                     })),
@@ -1276,7 +1392,11 @@ impl ReaderView {
             .child(
                 Button::new("passage")
                     .icon(IconName::Search)
-                    .label(self.chapter().to_string())
+                    .label(if on_saved {
+                        "Saved verses".to_string()
+                    } else {
+                        self.chapter().to_string()
+                    })
                     .outline()
                     .small()
                     .w(px(200.))
@@ -1287,7 +1407,7 @@ impl ReaderView {
             )
             .child(
                 icon_button("next", IconName::ChevronRight, "Next chapter (⌘])")
-                    .disabled(self.chapter().next().is_none())
+                    .disabled(on_saved || self.chapter().next().is_none())
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.next_chapter(&NextChapter, window, cx)
                     })),
@@ -1297,7 +1417,7 @@ impl ReaderView {
             .flex()
             .items_center()
             .gap_1()
-            .when(!self.tabs[self.active].is_split(), |d| {
+            .when(!self.tabs[self.active].is_split() && !on_saved, |d| {
                 d.child(versions).child(div().w(px(6.)))
             })
             .child(
@@ -1395,6 +1515,13 @@ impl ReaderView {
                     }
                     menu
                 }),
+            )
+            .child(
+                icon_button("saved", IconName::Heart, "Saved verses (⇧⌘D)")
+                    .selected(on_saved)
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.show_saved(&ShowSaved, window, cx)),
+                    ),
             )
             .child(
                 icon_button("notes", IconName::PanelRight, "Footnotes (⌥⌘N)")
@@ -1671,18 +1798,28 @@ impl ReaderView {
                 hsla(0., 0.7, 0.4, 1.)
             },
             note_marker: theme.primary,
-            target_background: if dark {
-                hsla(48. / 360., 0.6, 0.3, 0.5)
-            } else {
-                hsla(48. / 360., 1., 0.75, 0.6)
-            },
+            // A neutral wash: yellow means a saved highlight.
+            target_background: theme
+                .muted_foreground
+                .opacity(if dark { 0.22 } else { 0.14 }),
+            saved_background: highlight_color(cx),
+            selected_background: theme.info.opacity(if dark { 0.38 } else { 0.24 }),
         };
+        let selected = self
+            .selection
+            .as_ref()
+            .filter(|s| s.pane == pane.id && s.chapter == pane_chapter)
+            .map(|s| s.verses.clone())
+            .unwrap_or_default();
         let options = Options {
             red_letter: settings.red_letter,
             show_verse_numbers: settings.show_verse_numbers,
             italic_added: pane.translation == "KJV",
             target: pane.location.verse,
+            saved: cx.global::<Saved>().verses_in(pane_chapter),
+            selected,
         };
+        let pane_key = pane.id;
         let book = pane_chapter.book;
         let chapter = pane_chapter.chapter;
         let note_ids: Vec<u32> = content.notes.iter().map(|n| n.id).collect();
@@ -1776,9 +1913,11 @@ impl ReaderView {
         // paragraph breaks mid-verse), so the jump target is highlighted whole.
         let mut verse_in_progress = None;
         for (ix, block) in content.blocks.iter().enumerate() {
+            // Headings sit between verses; they never take a verse's highlight.
+            let in_progress = verse_in_progress.filter(|_| !block.kind.is_heading());
             let rendered = render_block(
                 block,
-                verse_in_progress,
+                in_progress,
                 |v| VerseId::new(book, chapter, v),
                 &note_index,
                 &palette,
@@ -1788,7 +1927,16 @@ impl ReaderView {
                 verse_in_progress = Some(*last);
             }
             let note_ids_for_click: Vec<u32> = rendered.notes.iter().map(|(_, id)| *id).collect();
-            let ranges: Vec<_> = rendered.notes.iter().map(|(r, _)| r.clone()).collect();
+            let mut ranges: Vec<_> = rendered.notes.iter().map(|(r, _)| r.clone()).collect();
+            // Verse numbers come after the note markers: clicking one selects the verse.
+            let note_count = ranges.len();
+            let number_verses: Vec<(u16, u16)> = rendered
+                .verse_numbers
+                .iter()
+                .filter_map(|r| rendered.verse_at(r.start))
+                .collect();
+            ranges.extend(rendered.verse_numbers.iter().cloned());
+            let segments = rendered.segments.clone();
             // Footnote text for the hover popover, by marker range.
             let tips: Vec<(std::ops::Range<usize>, SharedString)> = rendered
                 .notes
@@ -1818,14 +1966,22 @@ impl ReaderView {
             let text_layout = styled.layout().clone();
             let plain = rendered.text.clone();
             let entity = cx.entity().downgrade();
+            let click_entity = entity.clone();
             let text = InteractiveText::new(("block", ix), styled)
-                .on_click(ranges, move |range_ix, _, cx| {
+                .on_click(ranges, move |range_ix, window, cx| {
                     if let Some(id) = note_ids_for_click.get(range_ix).copied() {
-                        entity
+                        click_entity
                             .update(cx, |this, cx| {
                                 this.selected_note = Some(id);
                                 this.inspector_open = true;
                                 cx.notify();
+                            })
+                            .ok();
+                    } else if let Some(verse) = number_verses.get(range_ix - note_count).copied() {
+                        let shift = window.modifiers().shift;
+                        click_entity
+                            .update(cx, |this, cx| {
+                                this.click_verse(pane_key, pane_chapter, verse, shift, cx)
                             })
                             .ok();
                     }
@@ -1838,6 +1994,7 @@ impl ReaderView {
                             .build(window, cx),
                     )
                 });
+            let alt_layout = text_layout.clone();
             let text = crate::selectable::SelectableBlock::new(
                 ("select", ix),
                 order_base + ix as u64,
@@ -1846,7 +2003,37 @@ impl ReaderView {
                 text,
             );
 
-            let base = div().w_full().max_w(reading_width).px_6();
+            // ⌥-click anywhere in a verse selects it (useful with numbers hidden).
+            let base = div().w_full().max_w(reading_width).px_6().on_mouse_down(
+                MouseButton::Left,
+                move |event, _, cx| {
+                    if !event.modifiers.alt {
+                        return;
+                    }
+                    let index = alt_layout
+                        .index_for_position(event.position)
+                        .unwrap_or_else(|nearest| nearest);
+                    let verse = segments
+                        .iter()
+                        .rev()
+                        .find(|(start, _, _)| *start <= index)
+                        .map(|(_, first, last)| (*first, *last));
+                    if let Some(verse) = verse {
+                        cx.stop_propagation();
+                        entity
+                            .update(cx, |this, cx| {
+                                this.click_verse(
+                                    pane_key,
+                                    pane_chapter,
+                                    verse,
+                                    event.modifiers.shift,
+                                    cx,
+                                )
+                            })
+                            .ok();
+                    }
+                },
+            );
             let el = match &block.kind {
                 BlockKind::MajorHeading => base
                     .pt_6()
@@ -2328,6 +2515,7 @@ impl ReaderView {
                 }
             }))
             .child(body)
+            .children(self.render_selection_bar(cx))
             .when_some(zone, |d, right| {
                 d.child(
                     div()
@@ -2375,6 +2563,9 @@ impl ReaderView {
             .overflow_y_scroll()
             .size_full()
             .p_3();
+        if let Some(saved) = self.render_saved_in_chapter(cx) {
+            list = list.child(saved);
+        }
         if let Some(related) = self.render_related_verses(cx) {
             list = list.child(related);
         }
@@ -2987,6 +3178,51 @@ impl ReaderView {
                 self.save_tabs(cx);
             }
             "sidebar" => self.focus_sidebar(&FocusSidebar, window, cx),
+            // Saved verses: `select:3-5` picks verses in the focused pane,
+            // `highlight:3-5` saves them, `note:<text>` (`~` for spaces, `#tag`
+            // words become tags) writes the note of the item saved last,
+            // `noteeditor` opens the editor on it, `saved` opens the tab and
+            // `savedsearch:<query>` filters it.
+            "select" | "highlight" => {
+                let verses = VerseSet::parse(arg);
+                if let Some(first) = verses.first() {
+                    let (pane, chapter) = (self.tab().id, self.chapter());
+                    self.selection = Some(Selection {
+                        pane,
+                        chapter,
+                        verses,
+                        anchor: first,
+                    });
+                    if name == "highlight" {
+                        self.save_selection(cx);
+                    }
+                }
+            }
+            "note" => {
+                let text = arg.replace('~', " ");
+                let (tags, words): (Vec<&str>, Vec<&str>) =
+                    text.split(' ').partition(|w| w.starts_with('#'));
+                let tags: Vec<String> = tags.iter().map(|t| t.to_string()).collect();
+                let note = words.join(" ");
+                cx.update_global::<Saved, _>(|saved, _| {
+                    if let Some(id) = saved.items.iter().max_by_key(|i| i.id).map(|i| i.id) {
+                        saved.set_note(id, &note, &tags);
+                    }
+                });
+            }
+            "noteeditor" => {
+                let last = cx.global::<Saved>().items.iter().map(|i| i.id).max();
+                if let Some(id) = last {
+                    self.open_note_editor(id, window, cx);
+                }
+            }
+            "saved" => self.show_saved(&ShowSaved, window, cx),
+            "savedsearch" => {
+                let query = arg.replace('~', " ");
+                self.saved_page.filter.query = query.clone();
+                self.saved_query
+                    .update(cx, |input, cx| input.set_value(query, window, cx));
+            }
             _ => eprintln!("unknown debug action {name}"),
         }
         cx.notify();
@@ -3039,6 +3275,11 @@ impl Render for ReaderView {
             .on_action(cx.listener(Self::open_search_page))
             .on_action(cx.listener(Self::set_palette_query))
             .on_action(cx.listener(Self::focus_sidebar))
+            .on_action(cx.listener(Self::show_saved))
+            .on_action(cx.listener(Self::save_selection_action))
+            .on_action(cx.listener(Self::clear_selection))
+            .on_action(cx.listener(Self::export_saved))
+            .on_action(cx.listener(Self::copy_saved_markdown))
             .on_action(cx.listener(|this, _: &IncreaseFont, _, cx| {
                 this.update_settings(cx, |s| {
                     s.font_size = (s.font_size + 1.).min(FONT_SIZE_RANGE.1)
@@ -3109,6 +3350,8 @@ impl Render for ReaderView {
                     .when(sidebar_open, |d| d.child(self.render_sidebar(window, cx)))
                     .child(if self.search.is_some() {
                         self.render_search_page(cx).into_any_element()
+                    } else if self.tabs[self.active].is_saved_page() {
+                        self.render_saved_page(cx).into_any_element()
                     } else {
                         self.render_panes(window, cx).into_any_element()
                     })
@@ -3116,6 +3359,7 @@ impl Render for ReaderView {
             )
             .when(self.palette_open, |d| d.child(self.render_palette(cx)))
             .when(self.renaming.is_some(), |d| d.child(self.render_rename(cx)))
+            .children(self.render_overlays(cx))
     }
 }
 
@@ -3146,6 +3390,7 @@ mod tests {
             crate::bind_keys(cx);
             cx.set_global(library);
             cx.set_global(Settings::default());
+            cx.set_global(Saved::in_memory());
             setup(cx);
             let (window, view) = gpui_kit::open_window(
                 WindowOptions {
@@ -3249,6 +3494,207 @@ mod tests {
         assert!(chapter.contains("\n16 "), "{chapter}");
         assert!(chapter.ends_with("John 3 (BSB)"), "{chapter}");
         view.read_with(cx, |v, _| assert_eq!(v.chapter().to_string(), "John 3"));
+    }
+
+    /// Select verses in the focused pane as a click on their numbers would.
+    fn click_verses(view: &Entity<ReaderView>, verses: &[(u16, bool)], cx: &mut TestAppContext) {
+        view.update(cx, |v, cx| {
+            let (pane, chapter) = (v.tab().id, v.chapter());
+            for (verse, shift) in verses {
+                v.click_verse(pane, chapter, (*verse, *verse), *shift, cx);
+            }
+        });
+    }
+
+    fn saved_items(cx: &mut TestAppContext) -> Vec<SavedVerse> {
+        cx.update(|cx| cx.global::<Saved>().items.clone())
+    }
+
+    #[gpui_kit::test]
+    fn clicking_verse_numbers_selects_and_cmd_d_highlights(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        view.update(cx, |v, cx| v.go_to(ChapterRef::new(43, 3), None, cx));
+        // Click 16, shift-click 18, click 17 to drop it again.
+        click_verses(&view, &[(16, false), (18, true), (17, false)], cx);
+        view.read_with(cx, |v, _| {
+            let sel = v.selection.as_ref().expect("selected");
+            assert_eq!(sel.verses.to_string(), "16, 18");
+        });
+        with_window(window, cx, |window, cx| {
+            assert!(window.try_find("sel-highlight").is_some(), "the bar shows");
+            window.press("cmd-d", cx);
+        });
+        let items = saved_items(cx);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label(), "John 3:16, 18");
+        assert_eq!(items[0].version, "BSB");
+        assert!(
+            items[0].text.contains("loved the world"),
+            "{}",
+            items[0].text
+        );
+        assert!(
+            items[0].text.contains(" … "),
+            "a gap is marked: {}",
+            items[0].text
+        );
+        view.read_with(cx, |v, _| assert!(v.selection.is_none()));
+
+        // The highlight belongs to the verses, so it shows in KJV too.
+        view.update(cx, |v, cx| v.set_translation("KJV".into(), cx));
+        let shown = cx.update(|cx| cx.global::<Saved>().verses_in(ChapterRef::new(43, 3)));
+        assert!(shown.contains(16) && shown.contains(18) && !shown.contains(17));
+
+        // Clicking a highlighted verse picks up the whole item; Remove and Undo.
+        click_verses(&view, &[(18, false)], cx);
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.selection.as_ref().unwrap().verses.to_string(), "16, 18")
+        });
+        with_window(window, cx, |window, cx| window.click("sel-remove", cx));
+        assert!(saved_items(cx).is_empty());
+        with_window(window, cx, |window, cx| window.click("sel-undo", cx));
+        assert_eq!(saved_items(cx), items);
+
+        // Escape clears the selection.
+        with_window(window, cx, |window, cx| window.press("escape", cx));
+        view.read_with(cx, |v, _| assert!(v.selection.is_none()));
+    }
+
+    #[gpui_kit::test]
+    fn cmd_d_saves_the_verse_jumped_to_and_notes_take_tags(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        view.update(cx, |v, cx| {
+            v.go_to(ChapterRef::new(45, 8), Some(VerseId::new(45, 8, 28)), cx)
+        });
+        press(window, "cmd-d", cx);
+        let id = saved_items(cx)[0].id;
+        assert_eq!(saved_items(cx)[0].label(), "Romans 8:28");
+
+        let editor = view.clone();
+        with_window(window, cx, |window, cx| {
+            editor.update(cx, |v, cx| v.open_note_editor(id, window, cx))
+        });
+        with_window(window, cx, |window, cx| window.input("For hard days", cx));
+        let tags = view.read_with(cx, |v, _| v.tags_input.clone());
+        with_window(window, cx, |window, cx| {
+            tags.update(cx, |input, cx| input.set_value("Memory, hope", window, cx))
+        });
+        press(window, "cmd-enter", cx);
+        let item = saved_items(cx).remove(0);
+        assert_eq!(item.note, "For hard days");
+        assert_eq!(item.tags, vec!["Memory", "hope"]);
+        view.read_with(cx, |v, _| assert!(v.note_editor.is_none()));
+
+        // A second item's editor suggests the tags already in use.
+        view.update(cx, |v, cx| {
+            v.go_to(ChapterRef::new(43, 3), Some(VerseId::new(43, 3, 16)), cx)
+        });
+        press(window, "cmd-d", cx);
+        let newest = saved_items(cx)[0].id;
+        let editor = view.clone();
+        with_window(window, cx, |window, cx| {
+            editor.update(cx, |v, cx| v.open_note_editor(newest, window, cx))
+        });
+        with_window(window, cx, |window, cx| {
+            assert!(window.try_find(("tag-suggestion", 0usize)).is_some());
+            window.click(("tag-suggestion", 0usize), cx);
+        });
+        let typed = view.read_with(cx, |v, cx| v.tags_input.read(cx).value().to_string());
+        assert_eq!(typed, "hope, ", "ties sort by name");
+        press(window, "escape", cx);
+        view.read_with(cx, |v, _| assert!(v.note_editor.is_none()));
+        assert!(saved_items(cx)[0].tags.is_empty(), "Esc doesn't save");
+    }
+
+    #[gpui_kit::test]
+    fn saved_tab_filters_reorders_and_opens_in_a_new_tab(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        for (book, chapter, verse) in [(19, 23, 1), (43, 3, 16), (45, 8, 28)] {
+            view.update(cx, |v, cx| {
+                v.go_to(
+                    ChapterRef::new(book, chapter),
+                    Some(VerseId::new(book, chapter, verse)),
+                    cx,
+                )
+            });
+            press(window, "cmd-d", cx);
+        }
+        press(window, "cmd-shift-d", cx);
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.tabs.len(), 2);
+            assert!(v.tabs[v.active].is_saved_page());
+            assert_eq!(v.tabs[v.active].label(), "Saved verses");
+        });
+        // Newest first; ⌥↓ moves the selected item down.
+        let order = |cx: &mut TestAppContext| -> Vec<String> {
+            saved_items(cx).iter().map(|i| i.label()).collect()
+        };
+        assert_eq!(order(cx), vec!["Romans 8:28", "John 3:16", "Psalms 23:1"]);
+        press(window, "alt-down", cx);
+        assert_eq!(order(cx), vec!["John 3:16", "Romans 8:28", "Psalms 23:1"]);
+        view.read_with(cx, |v, _| assert_eq!(v.saved_page.selected, 1));
+
+        // Searching narrows the list; a passage reference works too.
+        with_window(window, cx, |window, cx| window.input("ps 23", cx));
+        let shown = view.read_with(cx, |v, cx| v.shown_saved(cx).len());
+        assert_eq!(shown, 1);
+        // The Open button switches to a new reading tab at the verse; the list stays.
+        with_window(window, cx, |window, cx| {
+            window.click(("saved-open", 0usize), cx)
+        });
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.tabs.len(), 3);
+            assert!(!v.tabs[v.active].is_saved_page());
+            assert_eq!(v.chapter().to_string(), "Psalms 23");
+            assert_eq!(v.target(), Some(VerseId::new(19, 23, 1)));
+            assert!(v.tabs.iter().any(|t| t.is_saved_page()));
+        });
+        // ⇧⌘D goes back to the one Saved tab rather than opening another.
+        press(window, "cmd-shift-d", cx);
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.tabs.len(), 3);
+            assert!(v.tabs[v.active].is_saved_page());
+        });
+
+        // Navigating from the Saved tab opens a reading tab beside it.
+        view.update(cx, |v, cx| v.go_to(ChapterRef::new(1, 1), None, cx));
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.tabs.len(), 4);
+            assert_eq!(v.chapter().to_string(), "Genesis 1");
+        });
+
+        // Copy as Markdown exports the shown list with its filter.
+        view.update(cx, |v, _| v.saved_page.filter.query = "ps 23".into());
+        let (md, count) = view.read_with(cx, |v, cx| v.saved_markdown(cx));
+        assert_eq!(count, 1);
+        assert!(
+            md.starts_with("# Saved verses\n\nMatching “ps 23” · 1 passage"),
+            "{md}"
+        );
+        assert!(md.contains("## Psalms 23:1 (BSB)"), "{md}");
+    }
+
+    #[gpui_kit::test]
+    fn saved_tab_is_restored_and_survives_restart(cx: &mut TestAppContext) {
+        let Some((window, view)) = open(cx) else {
+            return;
+        };
+        press(window, "cmd-shift-d", cx);
+        view.update(cx, |v, cx| v.save_tabs(cx));
+        let saved_tabs = cx.update(|cx| cx.global::<Settings>().tabs.clone());
+        assert!(saved_tabs.iter().any(|t| t.saved_page));
+        let restored: Vec<Tab> = saved_tabs.iter().map(Tab::from_saved).collect();
+        assert!(restored.iter().any(Tab::is_saved_page));
+        // The page shows (its controls are there) even with nothing saved.
+        with_window(window, cx, |window, _| {
+            assert!(window.try_find("saved-sort").is_some());
+        });
     }
 
     #[gpui_kit::test]

@@ -173,3 +173,5 @@ Terms (a Google Doc linked from `GET /v1/licenses`, license id 2, 69 Bibles incl
 
 ### Decisions recorded (2026-10-11, owner)
 Kept as built, knowing the risks above: the **30-day cache** for every Bible including the NIV, the **plain-text cache**, and **copying whole NIV chapters**. Rationale: a small desktop app used only by its owner for now. Revisit all three before sharing the app with anyone else (the license is between Biblica and the owner's YouVersion organization, and the clauses on downloads, encryption and takedown within 72 hours would then matter).
+
+Added 2026-10-12: **saved verses keep their text** in `user.db` with no expiry, for any Bible including the NIV and any length (owner decision, personal use). See [07](07-saved-verses.md). Revisit this with the three above.

@@ -4,6 +4,17 @@ All notable changes to Bible Reader are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- **Highlight verses.** Click a verse number to select it, shift-click to select a range, or ⌥-click a verse's text. Then choose Highlight in the bar that appears, or press ⌘D. Select as many verses in a chapter as you like. Highlights use one color that suits each theme, and show in every translation.
+- **Notes and tags on highlights.** Add a note and comma-separated tags to any highlight. The tag field suggests tags you've already used. The notes panel lists what you've saved in the current chapter.
+- **Saved verses tab (⇧⌘D).** Every highlight in one list, with its text, note and tags. Search it (including by passage, like "rom 8"), filter by tag, testament or "with notes", sort it, or drag (or ⌥↑ / ⌥↓) items into your own order. Open any item in a new tab with one click.
+- **Export saved verses as Markdown (⇧⌘E).** Exports the list as you're viewing it, filters and order included, to a `.md` file or the clipboard, with each version's copyright notice.
+
+### Changed
+- The highlight for the verse you jumped to is now a neutral gray, so it isn't mistaken for a saved highlight.
+- ⇧⌘C copies the selected verses when there are any.
+- Saved verses keep a copy of their text in the translation they were saved from, including YouVersion Bibles such as the NIV. They're stored in `user.db` next to your settings.
+
 ## [0.2.0] - 2026-10-12
 
 Bible Reader can now read the NIV and other licensed translations from YouVersion, using your own app key. The bundled translations and the offline experience are unchanged.

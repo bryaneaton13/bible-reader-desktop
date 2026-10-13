@@ -249,6 +249,9 @@ pub struct SavedTab {
     /// The right pane (not the left) is the one navigation applies to.
     #[serde(default, skip_serializing_if = "is_false")]
     pub side_focused: bool,
+    /// The Saved verses page rather than a chapter.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub saved_page: bool,
 }
 
 fn is_false(b: &bool) -> bool {

@@ -13,9 +13,10 @@ use gpui_kit::Action;
 
 use crate::library::{Appearance, FontPairing, SourceEntry};
 use crate::{
-    ClosePane, CloseTab, CopyChapter, CopyVerse, DecreaseFont, DecreaseLineSpacing, FocusLeftPane,
-    FocusRightPane, IncreaseFont, IncreaseLineSpacing, NewTab, OpenSettings, OpenShortcuts,
-    ReopenClosedTab, ResetFont, ResetLineSpacing, SelectTranslation, SetAppearance, SetFontPairing,
+    ClosePane, CloseTab, CopyChapter, CopySavedMarkdown, CopyVerse, DecreaseFont,
+    DecreaseLineSpacing, ExportSaved, FocusLeftPane, FocusRightPane, IncreaseFont,
+    IncreaseLineSpacing, NewTab, OpenSettings, OpenShortcuts, ReopenClosedTab, ResetFont,
+    ResetLineSpacing, SaveSelection, SelectTranslation, SetAppearance, SetFontPairing, ShowSaved,
     ToggleInspector, ToggleRedLetter, ToggleSidebar, ToggleSplit, ToggleVerseNumbers,
 };
 
@@ -449,6 +450,34 @@ fn commands(query: &str, cx: &Context) -> Vec<Row> {
             "Copy Verse with Citation".into(),
             &["clipboard", "quote"],
             Box::new(CopyVerse),
+        ),
+        (
+            "Saved Verses".into(),
+            &[
+                "highlights",
+                "bookmarks",
+                "favorites",
+                "notes",
+                "tags",
+                "memory",
+                "list",
+            ],
+            Box::new(ShowSaved),
+        ),
+        (
+            "Highlight Selected Verses".into(),
+            &["save", "bookmark", "favorite", "mark"],
+            Box::new(SaveSelection),
+        ),
+        (
+            "Export Saved Verses as Markdown…".into(),
+            &["download", "file", "highlights", "md", "share"],
+            Box::new(ExportSaved),
+        ),
+        (
+            "Copy Saved Verses as Markdown".into(),
+            &["clipboard", "highlights", "md", "export"],
+            Box::new(CopySavedMarkdown),
         ),
         ("Copy Chapter".into(), &["clipboard"], Box::new(CopyChapter)),
         (
