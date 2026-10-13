@@ -5,6 +5,7 @@
 pub mod fuzzy;
 pub mod search;
 pub mod study;
+pub mod user;
 
 use std::ops::RangeInclusive;
 use std::path::Path;
@@ -15,6 +16,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 pub use search::{MatchMode, ParsedQuery, Results, SearchRequest, search};
 pub use study::{BOOST_STRENGTH, Passage, Study, StudyWriter, Topic, TopicMatch};
+pub use user::{NewSaved, SavedVerse, UserStore};
 
 pub const SCHEMA_VERSION: &str = "2";
 

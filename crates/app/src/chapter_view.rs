@@ -7,7 +7,7 @@
 
 use std::ops::Range;
 
-use bible_core::{Block, BlockKind, Span, VerseId};
+use bible_core::{Block, BlockKind, Span, VerseId, VerseSet};
 use gpui_kit::{FontStyle, FontWeight, HighlightStyle, Hsla};
 
 pub struct Palette {
@@ -15,6 +15,10 @@ pub struct Palette {
     pub jesus: Hsla,
     pub note_marker: Hsla,
     pub target_background: Hsla,
+    /// Saved (highlighted) verses.
+    pub saved_background: Hsla,
+    /// Verses picked by clicking their numbers, before saving.
+    pub selected_background: Hsla,
 }
 
 pub struct Options {
@@ -23,6 +27,10 @@ pub struct Options {
     pub italic_added: bool,
     /// Verse to highlight after jumping to a reference.
     pub target: Option<VerseId>,
+    /// Saved verses of this chapter, shown highlighted.
+    pub saved: VerseSet,
+    /// Verses the user has selected.
+    pub selected: VerseSet,
 }
 
 /// One block flattened to a string plus styling and clickable note ranges.
@@ -35,6 +43,21 @@ pub struct RenderedBlock {
     pub verses: Vec<u16>,
     /// Byte ranges of verse number labels.
     pub verse_numbers: Vec<Range<usize>>,
+    /// Where each verse's text starts: (byte offset, first verse, last
+    /// verse). A block that continues a verse starts with it at offset 0;
+    /// merged verses ("17-18") cover more than one number.
+    pub segments: Vec<(usize, u16, u16)>,
+}
+
+impl RenderedBlock {
+    /// The verse (first, last) under byte `index`.
+    pub fn verse_at(&self, index: usize) -> Option<(u16, u16)> {
+        self.segments
+            .iter()
+            .rev()
+            .find(|(start, _, _)| *start <= index)
+            .map(|(_, first, last)| (*first, *last))
+    }
 }
 
 /// a..z without q (no superscript q in Unicode), then repeats.
@@ -62,27 +85,22 @@ pub fn render_block(
         notes: Vec::new(),
         verses: Vec::new(),
         verse_numbers: Vec::new(),
+        segments: Vec::new(),
     };
-    let mut target_start: Option<usize> = verse_in_progress
-        .filter(|v| options.target == Some(chapter_verse(*v)))
-        .map(|_| 0);
+    if let Some(v) = verse_in_progress {
+        out.segments.push((0, v, v));
+    }
 
     for span in &block.spans {
         match span {
             Span::Verse { num, end } => {
-                if let Some(start) = target_start.take() {
-                    out.highlights
-                        .push((start..out.text.len(), target_style(palette)));
-                }
-                let id = chapter_verse(*num);
                 out.verses.push(*num);
-                if options.target == Some(id) {
-                    target_start = Some(out.text.len());
-                }
                 if options.show_verse_numbers {
                     if !out.text.is_empty() && !out.text.ends_with(' ') {
                         out.text.push(' ');
                     }
+                    out.segments
+                        .push((out.text.len(), *num, end.unwrap_or(*num)));
                     let label = match end {
                         Some(e) => format!("{num}-{e}"),
                         None => num.to_string(),
@@ -98,6 +116,9 @@ pub fn render_block(
                     ));
                     out.verse_numbers.push(start..out.text.len());
                     out.text.push('\u{202F}');
+                } else {
+                    out.segments
+                        .push((out.text.len(), *num, end.unwrap_or(*num)));
                 }
             }
             Span::Text { text, style } => {
@@ -133,12 +154,62 @@ pub fn render_block(
             }
         }
     }
-    if let Some(start) = target_start {
-        out.highlights
-            .push((start..out.text.len(), target_style(palette)));
+
+    // Backgrounds per verse, weakest first: merging lets the later win.
+    let len = out.text.len();
+    let covers = |set: &VerseSet, first: u16, last: u16| (first..=last).any(|v| set.contains(v));
+    // One range per run of consecutive verses, so the space between two
+    // highlighted verses is covered too and they read as a single highlight.
+    let mut spans: Vec<(Range<usize>, [bool; 3])> = Vec::new();
+    for (ix, &(start, first, last)) in out.segments.iter().enumerate() {
+        let end = out.segments.get(ix + 1).map_or(len, |s| s.0);
+        // Leave out the space before the next verse number.
+        let end = start + out.text[start..end].trim_end().len();
+        if start >= end {
+            continue;
+        }
+        let target = options
+            .target
+            .is_some_and(|t| (first..=last).any(|v| chapter_verse(v) == t));
+        spans.push((
+            start..end,
+            [
+                covers(&options.saved, first, last),
+                target,
+                covers(&options.selected, first, last),
+            ],
+        ));
+    }
+    let colors = [
+        palette.saved_background,
+        palette.target_background,
+        palette.selected_background,
+    ];
+    for (kind, color) in colors.into_iter().enumerate() {
+        let mut run: Option<Range<usize>> = None;
+        for (range, on) in &spans {
+            if on[kind] {
+                run = Some(match run {
+                    Some(r) => r.start..range.end,
+                    None => range.clone(),
+                });
+            } else if let Some(r) = run.take() {
+                out.highlights.push((r, background(color)));
+            }
+        }
+        if let Some(r) = run {
+            out.highlights.push((r, background(color)));
+        }
     }
     out.highlights = merge_highlights(out.highlights);
     out
+}
+
+fn background(color: Hsla) -> HighlightStyle {
+    HighlightStyle {
+        background_color: Some(color),
+        ..Default::default()
+    }
 }
 
 /// Build explicit text runs so verse numbers can carry the `sups` feature,
@@ -192,13 +263,6 @@ pub fn build_runs(
     runs
 }
 
-fn target_style(palette: &Palette) -> HighlightStyle {
-    HighlightStyle {
-        background_color: Some(palette.target_background),
-        ..Default::default()
-    }
-}
-
 /// GPUI expects highlight ranges in order and non-overlapping. The target
 /// background overlaps other styles, so split everything at boundaries and
 /// combine the styles that cover each piece.
@@ -245,6 +309,8 @@ mod tests {
             jesus: c,
             note_marker: c,
             target_background: c,
+            saved_background: c,
+            selected_background: c,
         }
     }
 
@@ -270,6 +336,8 @@ mod tests {
             show_verse_numbers: true,
             italic_added: false,
             target: Some(VerseId::new(43, 3, 17)),
+            saved: VerseSet::default(),
+            selected: VerseSet::default(),
         };
         let r = render_block(
             &block,
@@ -306,6 +374,8 @@ mod tests {
             show_verse_numbers: true,
             italic_added: false,
             target: Some(VerseId::new(19, 23, 2)),
+            saved: VerseSet::default(),
+            selected: VerseSet::default(),
         };
         let highlighted = |in_progress| {
             render_block(
@@ -335,6 +405,8 @@ mod tests {
             show_verse_numbers: false,
             italic_added: false,
             target: None,
+            saved: VerseSet::default(),
+            selected: VerseSet::default(),
         };
         let r = render_block(
             &block,
@@ -346,5 +418,59 @@ mod tests {
         );
         assert_eq!(r.text, "In the beginning");
         assert!(r.highlights.is_empty());
+    }
+
+    #[test]
+    fn saved_and_selected_verses_get_backgrounds() {
+        let mut block = Block::new(BlockKind::Paragraph);
+        for (n, text) in [(1, "One."), (2, "Two."), (3, "Three.")] {
+            block.spans.push(Span::Verse { num: n, end: None });
+            block.push_text(text, TextStyle::default());
+        }
+        let mut palette = palette();
+        palette.saved_background = gpui_kit::red();
+        palette.selected_background = gpui_kit::blue();
+        let options = Options {
+            red_letter: false,
+            show_verse_numbers: true,
+            italic_added: false,
+            target: None,
+            saved: VerseSet::new([1, 2]),
+            selected: VerseSet::new([2]),
+        };
+        let r = render_block(
+            &block,
+            None,
+            |v| VerseId::new(43, 1, v),
+            &|_| 0,
+            &palette,
+            &options,
+        );
+        let background_at = |needle: &str| {
+            let at = r.text.find(needle).unwrap();
+            r.highlights
+                .iter()
+                .find(|(range, h)| range.contains(&at) && h.background_color.is_some())
+                .and_then(|(_, h)| h.background_color)
+        };
+        assert_eq!(background_at("One"), Some(gpui_kit::red()));
+        // Selection wins over the saved highlight.
+        assert_eq!(background_at("Two"), Some(gpui_kit::blue()));
+        assert_eq!(background_at("Three"), None);
+        // Saved verses 1 and 2 are one highlight: the space between is covered.
+        let has_bg = |at: usize| {
+            r.highlights
+                .iter()
+                .any(|(range, h)| range.contains(&at) && h.background_color.is_some())
+        };
+        let gap = r.text.find("One.").unwrap() + 4;
+        assert_eq!(&r.text[gap..gap + 1], " ");
+        assert!(has_bg(gap));
+        // The space after the last highlighted verse isn't.
+        let gap = r.text.find("Two.").unwrap() + 4;
+        assert_eq!(&r.text[gap..gap + 1], " ");
+        assert!(!has_bg(gap));
+        assert_eq!(r.verse_at(r.text.find("Two").unwrap()), Some((2, 2)));
+        assert_eq!(r.verse_at(0), Some((1, 1)));
     }
 }

@@ -30,7 +30,7 @@ Also done 2026-10-06: settings window (⌘,), footnote hover popovers, sidebar a
 ## Phase 2: Search + annotations (2 wk). Search done; annotations deferred with verse selection
 - FTS5 search with filters, result list, jump to verse.
 - Done 2026-10-07: ranked search (stemming, bm25 + topics + phrase + popularity), about 4,700 curated topics (openbible.info, merged with Nave's and Torrey's) with aliases, cross-references ("Related" in notes panel and results), suggested searches, search results page (⇧⌘F) with filters and open here / new tab / beside. Done 2026-10-07: topic cleanup (names, typos, trivia and weak topics dropped; Nave's and Torrey's merged in). Next: local vector search (see research notes).
-- Highlights, bookmarks, notes in `user.db`. Inspector pane.
+- Highlights, bookmarks, notes in `user.db`. Inspector pane. Done 2026-10-12: saved verses ([07](07-saved-verses.md)): select verses by number, one highlight color, notes and free-text tags, a Saved verses tab with search / filters / sort / reorder / open in a new tab, Markdown export.
 - Copy with citation (with version notice). Done 2026-10-06: ⇧⌘C verse, ⌥⌘C chapter, drag-select + ⌘C.
 
 ## Phase 3: Parallel (1 to 2 wk). Compare popover cut from MVP

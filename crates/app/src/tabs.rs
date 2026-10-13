@@ -30,9 +30,21 @@ impl Location {
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// What a tab shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TabKind {
+    /// A chapter (or two side by side).
+    #[default]
+    Reading,
+    /// The Saved verses page. Its location is only where new tabs opened
+    /// from it start.
+    Saved,
+}
+
 pub struct Tab {
     /// Stable identity, so the active tab survives reordering.
     pub id: u64,
+    pub kind: TabKind,
     pub location: Location,
     pub translation: String,
     /// Pinned tabs sit first, compact and without a close button.
@@ -54,6 +66,7 @@ impl Tab {
     pub fn new(location: Location, translation: String) -> Self {
         Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            kind: TabKind::Reading,
             location,
             translation,
             pinned: false,
@@ -64,6 +77,18 @@ impl Tab {
             side: None,
             focus_side: false,
         }
+    }
+
+    /// The Saved verses page, remembering where reading left off.
+    pub fn saved_page(location: Location, translation: String) -> Self {
+        Self {
+            kind: TabKind::Saved,
+            ..Self::new(location, translation)
+        }
+    }
+
+    pub fn is_saved_page(&self) -> bool {
+        self.kind == TabKind::Saved
     }
 
     pub fn is_split(&self) -> bool {
@@ -103,7 +128,7 @@ impl Tab {
     /// when `right` is false. The new pane takes focus. Does nothing when
     /// already split or when `other` is itself split.
     pub fn split_with(&mut self, mut other: Tab, right: bool) -> bool {
-        if self.is_split() || other.is_split() {
+        if self.is_split() || other.is_split() || self.is_saved_page() || other.is_saved_page() {
             return false;
         }
         other.pinned = false;
@@ -186,6 +211,9 @@ impl Tab {
 
     /// `label`, with each translation key shown through `name` (e.g. "yv:111" -> "NIV").
     pub fn label_with(&self, name: impl Fn(&str) -> String) -> String {
+        if self.is_saved_page() && self.name.is_none() {
+            return "Saved verses".into();
+        }
         match (&self.name, &self.side) {
             (Some(custom), _) => custom.clone(),
             (None, Some(side)) => format!(
@@ -217,6 +245,7 @@ impl Tab {
             name: self.name.clone(),
             side: self.side.as_ref().map(|s| Box::new(s.to_saved())),
             side_focused: self.focus_side && self.side.is_some(),
+            saved_page: self.is_saved_page(),
         }
     }
 
@@ -236,6 +265,10 @@ impl Tab {
         let mut tab = Self::new(Location { chapter, verse }, saved.translation.clone());
         tab.pinned = saved.pinned;
         tab.name = saved.name.clone();
+        if saved.saved_page {
+            tab.kind = TabKind::Saved;
+            return tab;
+        }
         if let Some(side) = &saved.side {
             let mut side = Self::from_saved(side);
             side.side = None;
@@ -320,6 +353,7 @@ mod tests {
             name: None,
             side: None,
             side_focused: false,
+            saved_page: false,
         };
         assert_eq!(Tab::from_saved(&bogus).location, at(43, 1));
     }
@@ -341,6 +375,21 @@ mod tests {
         let restored = Tab::from_saved(&tab.to_saved());
         assert_eq!(restored.label(), "John 3 · BSB  |  Romans 9 · KJV");
         assert!(restored.focus_side);
+    }
+
+    #[test]
+    fn saved_page_tab_round_trips_and_never_splits() {
+        let mut tab = Tab::saved_page(at(43, 3), "BSB".into());
+        assert_eq!(tab.label(), "Saved verses");
+        assert!(!tab.split_with(Tab::new(at(1, 1), "BSB".into()), true));
+        let mut reading = Tab::new(at(1, 1), "BSB".into());
+        assert!(!reading.split_with(Tab::saved_page(at(1, 1), "BSB".into()), true));
+        tab.pinned = true;
+        let restored = Tab::from_saved(&tab.to_saved());
+        assert!(restored.is_saved_page() && restored.pinned);
+        assert_eq!(restored.location, at(43, 3));
+        // A new tab from it reads.
+        assert!(!restored.duplicate().is_saved_page());
     }
 
     #[test]

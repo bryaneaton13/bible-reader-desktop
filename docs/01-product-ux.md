@@ -56,7 +56,7 @@
 7. Menu bar companion (basic)
 8. Offline only, all local
 
-Cut from v1 (2026-10-06): verse selection (and with it highlights, verse notes, copy with citation) and the compare popover.
+Cut from v1 (2026-10-06): verse selection (and with it highlights, verse notes, copy with citation) and the compare popover. Copy with citation came back 2026-10-06; verse selection, highlights and notes came back 2026-10-12 as saved verses ([07](07-saved-verses.md)).
 
 **Later**
 - Verse selection: highlight, bookmark, note, copy with citation

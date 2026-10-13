@@ -127,10 +127,24 @@ pub const SECTIONS: &[Section] = &[
         ],
     },
     Section {
+        title: "Saved verses",
+        rows: &[
+            builtin("Select a verse (click its number)", &[]),
+            row("Highlight and save the selected verses", &["secondary-d"]),
+            row("Clear the verse selection", &["escape"]),
+            row("Show saved verses", &["secondary-shift-d"]),
+            row("Export saved verses as Markdown", &["secondary-shift-e"]),
+            builtin("Move the selected saved verse", &["alt-up", "alt-down"]),
+        ],
+    },
+    Section {
         title: "Copy",
         rows: &[
             builtin("Copy selected text", &["secondary-c"]),
-            row("Copy verse with citation", &["secondary-shift-c"]),
+            row(
+                "Copy selected verses (or the verse) with citation",
+                &["secondary-shift-c"],
+            ),
             row("Copy chapter", &["secondary-alt-c"]),
         ],
     },
@@ -212,6 +226,10 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-shift-l", ToggleDark, Some("Reader")),
         KeyBinding::new("secondary-shift-c", CopyVerse, Some("Reader")),
         KeyBinding::new("secondary-alt-c", CopyChapter, Some("Reader")),
+        KeyBinding::new("secondary-d", SaveSelection, Some("Reader")),
+        KeyBinding::new("escape", ClearSelection, Some("Reader")),
+        KeyBinding::new("secondary-shift-d", ShowSaved, Some("Reader")),
+        KeyBinding::new("secondary-shift-e", ExportSaved, Some("Reader")),
         KeyBinding::new(
             "secondary-1",
             SelectTranslation { index: 0 },

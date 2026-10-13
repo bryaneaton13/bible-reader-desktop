@@ -13,6 +13,10 @@
 # narrow (one pane at a time), dropzone:left|right (tab-drag overlay),
 # font:classic|editorial|modern|clean|garamond|sans (title + body pairing).
 # yvdemo (fake YouVersion Bible + cached chapter), yvloading, yverror, yvsearch, yvstate:<signedin|waiting|finishing|failed|loadingcatalog|catalogerror>.
+# Saved verses: select:<verses> (e.g. 3-5,8; shows the selection bar), highlight:<verses>
+# (save them), note:<text> (~ = space, #words become tags; on the item saved last),
+# noteeditor (open the note and tags editor on it), saved (the Saved verses tab),
+# savedsearch:<query> (~ = space).
 # SHOT_WINDOW=settings|sources|shortcuts captures that window instead of the reader.
 # Set SHOT_SETTINGS to a settings.json to start from (e.g. with recents).
 set -euo pipefail
