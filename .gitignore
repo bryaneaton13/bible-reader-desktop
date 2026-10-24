@@ -5,3 +5,4 @@
 /dist
 /agent.env
 .omc/
+node_modules/

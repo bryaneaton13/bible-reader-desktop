@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#faf9f6">
+    <meta name="description" content="A fast, native Bible reader for Mac, built in Rust with GPUI. Search as you type, jump to passages, and read three included Bibles offline. Free and open source.">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Bible Reader — Native and fast">
+    <meta property="og:description" content="Built for macOS, not wrapped in a browser. Fast local search, keyboard navigation, and three offline Bibles. Free and open source.">
+    <title>Bible Reader — Native and fast</title>
+    <link rel="icon" href="site-assets/app-icon.png" type="image/png">
+    <link rel="preload" href="site-assets/Lora-Regular.ttf" as="font" type="font/ttf" crossorigin>
+    <link rel="preload" href="site-assets/Outfit-Regular.ttf" as="font" type="font/ttf" crossorigin>
+    <link rel="stylesheet" href="site.css">
+    <script src="site.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="header wrap">
+      <a class="brand" href="#" aria-label="Bible Reader home">
+        <img src="site-assets/app-icon.png" alt="" width="36" height="36">
+        <span>Bible Reader</span>
+      </a>
+      <nav aria-label="Main navigation">
+        <a class="nav-detail" href="#features">The app</a>
+        <a class="nav-detail" href="https://github.com/bryaneaton13/bible-reader-desktop">GitHub <span aria-hidden="true">↗</span></a>
+        <a class="button button-small button-outline" href="https://github.com/bryaneaton13/bible-reader-desktop/releases/latest">Download <span aria-hidden="true">↓</span></a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-grid" aria-hidden="true"></div>
+        <div class="wrap hero-content">
+          <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> Made for Mac. Free &amp; open source.</p>
+          <h1 id="hero-title">A Bible reader.<br><em>Native and fast.</em></h1>
+          <p class="hero-description">Built for macOS, not wrapped in a browser.<br class="desktop-break"> Jump to passages, search as you type, and read offline.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://github.com/bryaneaton13/bible-reader-desktop/releases/latest">Download for Mac <span aria-hidden="true">↓</span></a>
+            <a class="text-link" href="https://github.com/bryaneaton13/bible-reader-desktop">Free on GitHub <span aria-hidden="true">↗</span></a>
+          </div>
+          <p class="system-note">macOS 13+ <span aria-hidden="true">·</span> Apple Silicon <span aria-hidden="true">·</span> No account needed</p>
+
+          <div class="community">
+            <p>GPU-rendered. Built with <a href="https://www.rust-lang.org/">Rust</a> &amp; <a href="https://www.gpui.rs/">GPUI</a>.</p>
+            <a class="community-link" href="https://github.com/zed-industries/awesome-gpui#productivity"><span class="little-star" aria-hidden="true">✳</span> Listed on Zed’s Awesome GPUI <span aria-hidden="true">↗</span></a>
+          </div>
+
+          <figure class="preview">
+            <div class="window-frame" data-preview-theme="light">
+              <div class="window-chrome" aria-hidden="true">
+                <div class="traffic-lights"><i></i><i></i><i></i></div>
+                <span>Bible Reader</span>
+                <span class="chrome-spacer"></span>
+              </div>
+              <img id="reader-preview" src="screenshots/reader-light.png" alt="Bible Reader in Light: John 3 with red-letter text and a highlighted verse." width="1100" height="820" fetchpriority="high">
+            </div>
+            <figcaption>
+              <span id="preview-caption" aria-live="polite">Light theme · Adjustable fonts and reading width.</span>
+              <div class="theme-picker" role="group" aria-label="Screenshot appearance" hidden>
+                <button type="button" data-theme="light" aria-pressed="true"><span class="theme-dot theme-light" aria-hidden="true"></span>Light</button>
+                <button type="button" data-theme="sepia" aria-pressed="false"><span class="theme-dot theme-sepia" aria-hidden="true"></span>Sepia</button>
+                <button type="button" data-theme="dark" aria-pressed="false"><span class="theme-dot theme-dark" aria-hidden="true"></span>Dark</button>
+              </div>
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="features wrap" id="features" aria-labelledby="features-title">
+        <div class="section-heading">
+          <p class="overline">BUILT FOR SPEED</p>
+          <h2 id="features-title">Native performance.<br>Everyday tools.</h2>
+          <p>GPU-rendered text. Local SQLite data.<br>No Electron, web view, or account required.</p>
+        </div>
+
+        <div class="essentials">
+          <article>
+            <span class="feature-label" aria-hidden="true">01 / NATIVE PERFORMANCE</span>
+            <h3>No browser overhead.</h3>
+            <p>Rust and GPUI render the interface directly on the GPU. Smooth scrolling and quick chapter changes, without Electron.</p>
+          </article>
+          <article>
+            <span class="feature-label" aria-hidden="true">02 / OFFLINE FIRST</span>
+            <h3>Local data. No waiting on a server.</h3>
+            <p>BSB, KJV, and WEB are included on your Mac. Chapters and search load from local SQLite files, with no network requests.</p>
+          </article>
+          <article>
+            <span class="feature-label" aria-hidden="true">03 / HIGHLIGHTS &amp; NOTES</span>
+            <h3>Save verses, notes, and tags.</h3>
+            <p>Highlight verses, add notes and tags, and come back to your saved passages. Export them as Markdown anytime.</p>
+          </article>
+        </div>
+
+        <div class="feature-cards">
+          <article class="feature-card">
+            <div class="card-copy">
+              <span class="card-kicker">SEARCH &amp; KEYBOARD SHORTCUTS</span>
+              <h3>Find passages as you type.</h3>
+              <p>Search words and topics locally. Press <kbd>⌘ K</kbd>, type a reference like <span class="reference">jn 3:16</span>, and press Enter to jump straight there.</p>
+            </div>
+            <div class="card-image"><img src="screenshots/search.png" alt="Topical search for pride, showing key passages and ranked verse matches." width="1100" height="820" loading="lazy" decoding="async"></div>
+          </article>
+          <article class="feature-card">
+            <div class="card-copy">
+              <span class="card-kicker">TABS &amp; SPLIT VIEW</span>
+              <h3>Compare passages side by side.</h3>
+              <p>Open chapters or translations in separate tabs or split view. Each pane keeps its own place and navigation history.</p>
+            </div>
+            <div class="card-image"><img src="screenshots/split.png" alt="Split view with Genesis 1 and John 1 open side by side in the BSB translation." width="1100" height="820" loading="lazy" decoding="async"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="youversion wrap" aria-labelledby="youversion-title">
+        <div class="integration-heading">
+          <span class="integration-mark" aria-hidden="true">+</span>
+          <div><p class="overline">OPTIONAL, NOT REQUIRED</p><h2 id="youversion-title">Add YouVersion translations.</h2></div>
+        </div>
+        <div class="integration-copy">
+          <p>Have a YouVersion developer app key? Add it in Settings to connect more translations, including the NIV where licensed. The three included Bibles stay offline, either way.</p>
+          <a class="text-link" href="https://github.com/bryaneaton13/bible-reader-desktop#niv-and-other-bibles-from-youversion">YouVersion setup &amp; licensing notes <span aria-hidden="true">↗</span></a>
+          <p class="fine-print">Online access, your own app key, and any required publisher licenses apply. No key or licensed text is included.</p>
+        </div>
+      </section>
+
+      <section class="download wrap" id="download" aria-labelledby="download-title">
+        <img class="download-icon" src="site-assets/app-icon.png" alt="" width="72" height="72" loading="lazy">
+        <p class="overline">FREE &amp; OPEN SOURCE</p>
+        <h2 id="download-title">Get Bible Reader<br>for your Mac.</h2>
+        <a class="button button-primary" href="https://github.com/bryaneaton13/bible-reader-desktop/releases/latest">Download for Mac <span aria-hidden="true">↓</span></a>
+        <p class="system-note">Free and open source. macOS 13+ · Apple Silicon.</p>
+        <details class="install-note">
+          <summary>A note on your first launch <span aria-hidden="true">+</span></summary>
+          <p>Download the macOS arm64 ZIP from GitHub Releases, unzip it, and drag Bible Reader into Applications. This build isn’t notarized by Apple. If macOS blocks it, open <strong>System Settings → Privacy &amp; Security → Open Anyway</strong>. Only approve a download you trust. <a href="https://github.com/bryaneaton13/bible-reader-desktop#download-for-mac-apple-silicon">Full installation instructions ↗</a></p>
+        </details>
+      </section>
+    </main>
+
+    <footer class="footer wrap">
+      <a class="brand" href="#"><img src="site-assets/app-icon.png" alt="" width="28" height="28"><span>Bible Reader</span></a>
+      <p>Native macOS. Rust + GPUI.</p>
+      <nav aria-label="Footer navigation">
+        <a href="https://github.com/bryaneaton13/bible-reader-desktop">GitHub</a>
+        <a href="https://github.com/bryaneaton13/bible-reader-desktop/releases">Releases</a>
+        <a href="https://github.com/bryaneaton13/bible-reader-desktop/blob/main/LICENSE">MIT License</a>
+      </nav>
+    </footer>
+  </body>
+</html>

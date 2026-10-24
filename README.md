@@ -18,6 +18,10 @@ Most Bible apps are a browser in a wrapper. This one is a native binary that tal
 - **Small.** The release binary is about 30 MB. The whole `.app`, with all three Bibles, the topical index and bundled fonts, is under 90 MB.
 - **Keyboard first.** Press ⌘K, type `jn 3:16`, press Enter. You never have to touch the mouse.
 
+## Landing page
+
+The static landing page lives in [`docs/index.html`](docs/index.html). Preview it with `python3 -m http.server 8000 --directory docs`, then open <http://localhost:8000>. No dependencies or build step are needed. To host it, publish the `docs/` directory (for example, with GitHub Pages). All images and fonts are served locally; the page uses no analytics or third-party scripts.
+
 ## Screenshots
 
 | Dark, with an editorial font pairing | Sepia, with the footnotes panel |

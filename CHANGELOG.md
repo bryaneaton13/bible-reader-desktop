@@ -4,6 +4,9 @@ All notable changes to Bible Reader are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- A simple website focused on native performance, with light-first app previews, Mac downloads, GitHub and build details, and optional YouVersion setup information.
+
 ## [0.3.0] - 2026-10-23
 
 ### Added
