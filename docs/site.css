@@ -71,6 +71,9 @@ h1, h2 { font-family: var(--serif); font-weight: 400; }
 h1 { margin-top: 23px; font-size: clamp(48px, 5.8vw, 78px); line-height: 1.13; letter-spacing: -3.8px; text-wrap: balance; }
 h1 em { color: var(--olive); }
 .hero-description { margin-top: 23px; color: var(--muted); font-size: 18px; line-height: 1.6; }
+.hero-integration { max-width: 580px; margin: 16px auto 0; color: var(--muted); font-size: 15px; }
+.hero-integration a { color: var(--olive); text-decoration: underline; }
+.hero-integration span { display: block; margin-top: 3px; font-size: 12px; }
 .hero-actions { display: flex; align-items: center; justify-content: center; gap: 28px; margin-top: 27px; }
 .text-link { display: inline-flex; align-items: center; gap: 12px; font-size: 14px; }
 .text-link:hover { text-decoration: underline; }
