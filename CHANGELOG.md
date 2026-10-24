@@ -6,6 +6,7 @@ All notable changes to Bible Reader are documented here. The format follows [Kee
 
 ### Added
 - A simple website focused on native performance, with light-first app previews, Mac downloads, GitHub and build details, and optional YouVersion setup information.
+- Privacy-friendly Vercel Web Analytics on the website, with no analytics added to the Mac app.
 
 ## [0.3.0] - 2026-10-23
 
