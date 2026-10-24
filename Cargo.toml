@@ -4,7 +4,7 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
-version = "0.2.0"
+version = "0.3.0"
 publish = false
 license = "MIT"
 repository = "https://github.com/bryaneaton13/bible-reader-desktop"

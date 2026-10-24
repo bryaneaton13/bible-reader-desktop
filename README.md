@@ -1,5 +1,7 @@
 # Bible Reader
 
+**[Download for Mac (Apple Silicon)](https://github.com/bryaneaton13/bible-reader-desktop/releases/latest)** · [Installation instructions](#download-for-mac-apple-silicon)
+
 A fast, offline Bible reader for macOS, written in Rust. The whole interface is drawn on the GPU with [GPUI](https://www.gpui.rs) (the UI framework behind the [Zed](https://zed.dev) editor) and assembled from [gpui-kit](https://gpui-kit.com) components. There is no web view and no Electron. Out of the box the app makes no network calls; the only ones are the optional YouVersion source below, which you turn on yourself.
 
 ![Reading John 3 in the light theme, with the sidebar and a highlighted verse](docs/screenshots/reader-light.png)
@@ -82,6 +84,20 @@ A few things worth knowing if you are evaluating GPUI:
 
 ## Install
 
+### Download for Mac (Apple Silicon)
+
+**[Download Bible Reader](https://github.com/bryaneaton13/bible-reader-desktop/releases/latest)** — choose the `Bible-Reader-<version>-macOS-arm64.zip` file under **Assets**. The download includes the offline BSB, KJV and WEB Bibles. No Rust, Git or terminal commands are needed.
+
+1. Unzip the download and drag **Bible Reader.app** into **Applications**.
+2. Open Bible Reader. Because this free build is ad-hoc signed and **not notarized by Apple**, macOS may block the first launch with an unverified-developer warning.
+3. If blocked, open **System Settings → Privacy & Security**, find the Bible Reader notice and click **Open Anyway**. Confirm the prompt, then open the app again if needed. Only approve a download you trust. Organization-managed Macs may not allow this override.
+
+The current download is for **Apple Silicon Macs (M1 or newer)** running **macOS 13 or later**, not Intel Macs. To update, quit Bible Reader (⌘Q) and replace the app in Applications with the new copy. Your settings and saved verses are kept separately and remain in place.
+
+YouVersion is optional and requires your own app key and any publisher licenses. No key or licensed Bible text is included in the download. Its caching, copying and saved-text behavior has unresolved licensing caveats; see the [recorded decisions](docs/06-youversion-platform.md#biblica-license-what-it-requires-and-open-decisions-for-you) before enabling it.
+
+### Build from source
+
 You need macOS, Rust and the Xcode Command Line Tools. Full Xcode is not required, because gpui-kit compiles its Metal shaders at runtime.
 
 ```sh
@@ -103,6 +119,14 @@ To build a real Mac app (release binary, translations and icon in one ad-hoc-sig
 scripts/bundle.sh             # -> dist/Bible Reader.app
 scripts/bundle.sh --install   # also copy to ~/Applications and launch it
 ```
+
+To create a versioned ZIP and SHA-256 checksum for distribution on the current Mac architecture:
+
+```sh
+scripts/package.sh           # -> dist/Bible-Reader-<version>-macOS-<arch>.zip (+ .sha256)
+```
+
+This does not notarize the app or publish a release. It builds without an embedded YouVersion app key and packages only the app bundle, not your personal data.
 
 ## Keyboard shortcuts
 

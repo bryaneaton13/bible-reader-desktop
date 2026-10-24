@@ -189,7 +189,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -587,14 +587,14 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bible-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "bible-import"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bible-core",
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "bible-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bible-core",
@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "bible-youversion"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",

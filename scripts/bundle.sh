@@ -25,6 +25,29 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/data"
 cp target/release/bible-reader "$app/Contents/MacOS/bible-reader"
 cp data/build/*.sqlite data/build/study.db "$app/Contents/Resources/data/"
 cp assets/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
+cp LICENSE "$app/Contents/Resources/LICENSE.txt"
+cp -R assets/fonts/licenses "$app/Contents/Resources/font-licenses"
+cp data/sources/openbible/README.md "$app/Contents/Resources/openbible-attribution.md"
+cp data/sources/topical/README.md "$app/Contents/Resources/topical-attribution.md"
+cat > "$app/Contents/Resources/Credits.txt" <<'EOF'
+Bible Reader — https://github.com/bryaneaton13/bible-reader-desktop
+Code: MIT (see LICENSE.txt).
+
+Bundled Bible texts: Berean Standard Bible (https://berean.bible),
+King James Version and World English Bible (https://ebible.org).
+Public-domain source texts; no YouVersion text is bundled.
+
+Topics and cross-references: openbible.info, CC BY 4.0.
+https://www.openbible.info/topics
+https://www.openbible.info/labs/cross-references/
+License: https://creativecommons.org/licenses/by/4.0/
+Modified: filtered and merged into the app's study index.
+Nave's Topical Bible and Torrey's New Topical Textbook: public domain,
+via https://ccel.org (see the attribution files).
+
+Bundled fonts: SIL Open Font License (see font-licenses).
+Additional credits appear in Settings > About and in the source repository.
+EOF
 
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
