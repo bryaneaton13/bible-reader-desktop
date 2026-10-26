@@ -1,6 +1,7 @@
 //! Rows for the toolbar's searchable translation dropdown (gpui-kit `Select`).
 //! The trigger shows just the abbreviation; the list shows the full name too,
 //! and search matches either. Bibles from YouVersion carry a small tag.
+//! The final row opens Bible sources settings, even when no Bible matches.
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::select::SelectItem;
@@ -9,10 +10,16 @@ use gpui_kit::*;
 
 use crate::library::SourceEntry;
 
+#[derive(Clone, PartialEq)]
+pub enum TranslationChoice {
+    Bible(String),
+    AddMore,
+}
+
 #[derive(Clone)]
 pub struct TranslationItem {
     /// What tabs store: the abbreviation, or `yv:<id>` for YouVersion Bibles.
-    key: String,
+    choice: TranslationChoice,
     label: String,
     name: SharedString,
     remote: bool,
@@ -21,18 +28,34 @@ pub struct TranslationItem {
 impl TranslationItem {
     pub fn from_entry(entry: &SourceEntry) -> Self {
         Self {
-            key: entry.key.clone(),
+            choice: TranslationChoice::Bible(entry.key.clone()),
             label: entry.label.clone(),
             name: entry.name.clone().into(),
             remote: entry.remote,
         }
     }
+
+    pub fn items(entries: &[SourceEntry]) -> Vec<Self> {
+        entries
+            .iter()
+            .map(Self::from_entry)
+            .chain(std::iter::once(Self {
+                choice: TranslationChoice::AddMore,
+                label: "Add more".into(),
+                name: "".into(),
+                remote: false,
+            }))
+            .collect()
+    }
 }
 
 impl SelectItem for TranslationItem {
-    type Value = String;
+    type Value = TranslationChoice;
 
     fn title(&self) -> SharedString {
+        if self.choice == TranslationChoice::AddMore {
+            return self.label.clone().into();
+        }
         format!("{} ({})", self.label, self.name).into()
     }
 
@@ -44,6 +67,9 @@ impl SelectItem for TranslationItem {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let tag_bg = theme.muted;
+        if self.choice == TranslationChoice::AddMore {
+            return div().text_color(theme.link).child(self.label.clone());
+        }
         div()
             .flex()
             .items_center()
@@ -74,13 +100,14 @@ impl SelectItem for TranslationItem {
             })
     }
 
-    fn value(&self) -> &String {
-        &self.key
+    fn value(&self) -> &TranslationChoice {
+        &self.choice
     }
 
     fn matches(&self, query: &str) -> bool {
         let query = query.to_lowercase();
-        self.label.to_lowercase().contains(&query)
+        self.choice == TranslationChoice::AddMore
+            || self.label.to_lowercase().contains(&query)
             || self.name.to_lowercase().contains(&query)
             || (self.remote && "youversion".contains(&query))
     }

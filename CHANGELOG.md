@@ -5,6 +5,7 @@ All notable changes to Bible Reader are documented here. The format follows [Kee
 ## [Unreleased]
 
 ### Added
+- An “Add more” link in translation dropdowns opens Settings ▸ Bible sources.
 - A simple website focused on native performance, with light-first app previews, Mac downloads, GitHub and build details, and optional YouVersion setup information.
 - Privacy-friendly Vercel Web Analytics on the website, with no analytics added to the Mac app.
 - A website favicon matching the desktop app icon, with small-size and browser fallback versions.

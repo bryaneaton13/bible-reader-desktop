@@ -40,7 +40,7 @@ use crate::remote;
 use crate::saved::{self, Saved};
 use crate::suggestions;
 use crate::tabs::{Location, Tab};
-use crate::translation_picker::TranslationItem;
+use crate::translation_picker::{TranslationChoice, TranslationItem};
 use crate::{
     ClearSelection, ClosePalette, ClosePane, CloseTab, CopyChapter, CopySavedMarkdown, CopyVerse,
     DecreaseFont, DecreaseLineSpacing, ExportSaved, FocusLeftPane, FocusReader, FocusRightPane,
@@ -390,9 +390,7 @@ impl ReaderView {
 
         let entries = sources(cx);
         let source_keys: Vec<String> = entries.iter().map(|e| e.key.clone()).collect();
-        let make_items = || -> Vec<TranslationItem> {
-            entries.iter().map(TranslationItem::from_entry).collect()
-        };
+        let make_items = || TranslationItem::items(&entries);
         let selected_in = |key: &str| {
             source_keys
                 .iter()
@@ -704,8 +702,7 @@ impl ReaderView {
         }
         self.source_keys = keys;
         for select in [self.translation_select.clone(), self.side_select.clone()] {
-            let items: Vec<TranslationItem> =
-                entries.iter().map(TranslationItem::from_entry).collect();
+            let items = TranslationItem::items(&entries);
             select.update(cx, |select, cx| {
                 select.set_items(SearchableVec::new(items), window, cx)
             });
@@ -782,7 +779,7 @@ impl ReaderView {
             (self.side_select.clone(), right),
         ] {
             let Some(abbrev) = abbrev else { continue };
-            if select.read(cx).selected_value() == Some(&abbrev) {
+            if select.read(cx).selected_value() == Some(&TranslationChoice::Bible(abbrev.clone())) {
                 continue;
             }
             if let Some(ix) = self.source_keys.iter().position(|k| *k == abbrev) {
@@ -1150,11 +1147,7 @@ impl ReaderView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let SelectEvent::Confirm(Some(abbrev)) = event {
-            self.focus_pane(false, cx);
-            self.set_translation(abbrev.clone(), cx);
-        }
-        self.focus.focus(window, cx);
+        self.on_translation_choice(event, false, window, cx);
     }
 
     fn on_side_translation_selected(
@@ -1164,9 +1157,31 @@ impl ReaderView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let SelectEvent::Confirm(Some(abbrev)) = event {
-            self.focus_pane(true, cx);
-            self.set_translation(abbrev.clone(), cx);
+        self.on_translation_choice(event, true, window, cx);
+    }
+
+    fn on_translation_choice(
+        &mut self,
+        event: &SelectEvent<SearchableVec<TranslationItem>>,
+        right: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SelectEvent::Confirm(Some(TranslationChoice::Bible(abbrev))) => {
+                self.focus_pane(right, cx);
+                self.set_translation(abbrev.clone(), cx);
+            }
+            SelectEvent::Confirm(Some(TranslationChoice::AddMore)) => {
+                // Let Select close and clear its query before restoring the
+                // real Bible and moving focus to a different window.
+                cx.defer_in(window, |this, window, cx| {
+                    this.sync_translation_select(window, cx);
+                    crate::settings_window::open_sources(cx);
+                });
+                return;
+            }
+            _ => {}
         }
         self.focus.focus(window, cx);
     }
@@ -3738,6 +3753,53 @@ mod tests {
         view.read_with(cx, |v, _| assert_eq!(v.tab().translation, "KJV"));
         let saved = cx.read(|cx| cx.global::<Settings>().translation.clone());
         assert_eq!(saved, "KJV");
+    }
+
+    #[gpui_kit::test]
+    fn translation_add_more_opens_settings_without_changing_bibles(cx: &mut TestAppContext) {
+        let Some((window, view)) = open_with(cx, |cx| {
+            cx.set_global(crate::settings_window::SettingsWindow(None));
+        }) else {
+            return;
+        };
+        for (split, right) in [(false, false), (true, false), (true, true)] {
+            if split && !view.read_with(cx, |v, _| v.tabs[v.active].is_split()) {
+                with_window(window, cx, |window, cx| window.press("cmd-\\", cx));
+            }
+            with_window(window, cx, |window, cx| {
+                window.click(pane_id("translation", right), cx)
+            });
+            let focused = view.read_with(cx, |v, _| v.tabs[v.active].focus_side);
+            // The action remains available even when no translation matches.
+            with_window(window, cx, |window, cx| {
+                window.input("no matching bible", cx)
+            });
+            with_window(window, cx, |window, cx| window.press("enter", cx));
+            let settings = cx.read(|cx| cx.global::<crate::settings_window::SettingsWindow>().0);
+            assert!(settings.is_some(), "Add more opens Settings");
+            view.read_with(cx, |v, cx| {
+                let tab = &v.tabs[v.active];
+                assert_eq!(tab.focus_side, focused);
+                assert_eq!(tab.translation, "BSB");
+                if let Some(side) = &tab.side {
+                    assert_eq!(side.translation, "BSB");
+                }
+                let select = if right {
+                    &v.side_select
+                } else {
+                    &v.translation_select
+                };
+                assert!(matches!(
+                    select.read(cx).selected_value(),
+                    Some(TranslationChoice::Bible(key)) if key == "BSB"
+                ));
+                assert_eq!(cx.global::<Settings>().translation, "BSB");
+            });
+            cx.update_window(settings.unwrap().into(), |_, window, _| {
+                window.remove_window()
+            })
+            .unwrap();
+        }
     }
 
     #[gpui_kit::test]
